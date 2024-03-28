@@ -137,16 +137,16 @@ La présente problèmatique peut être représentée par le chiffrement d'une im
 
 |Texte clair|Texte chiffré avec AES-ECB|
 |---|---|
-![](https://upload.wikimedia.org/wikipedia/commons/thumb/3/35/Tux.svg/202px-Tux.svg.png)|![](https://upload.wikimedia.org/wikipedia/commons/c/c0/Tux_ECB.png)|
+![](./figures/plainTux.svg.png)|![](./figures/encryptedECB.png)|
 
 
 ### AES-CCM
 L'algorithme garantissant la confidentialité des données utilisées dans les différentes versions de LoRaWAN jusqu'à présent est AES-CCM. C'est un algorithme de chiffrement de données symmétrique authentifié, ceci garantissant ainsi l'intégrité des données. Plus précisément, cet algorithme utilise AES-CTR (counter mode), qui utilise un compteur et en plus, un AES-CMAC à la fin pour la partie authentification des données.
 
 #### Chiffrement avec AES-CTR :
-![AES-CTR_Encryption](https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/CTR_encryption_2.svg/1024px-CTR_encryption_2.svg.png)
+![AES-CTR_Encryption](./figures/CTR_encryption_2.svg.png)
 #### Déchiffrement avec AES-CTR :
-![AES-CTR_Decryption](https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/CTR_decryption_2.svg/1024px-CTR_decryption_2.svg.png)
+![AES-CTR_Decryption](./figures/CTR_decryption_2.svg.png)
 
 #### Réutilisation d'IV
 
@@ -213,7 +213,7 @@ ABP pour **A**ctivation **B**y **P**ersonalization : utilise toujours les mêmes
 # Architecture
 Voici ci-dessous un schéma représentant l’acheminement de données entre le *end device* ainsi que le serveur d’application :
 
-![[https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png](https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png)](https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png)
+![[https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png](https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png)](./figures/lorawan_architecture.png)
 
 [https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png](https://www.thethingsindustries.com/docs/getting-started/lorawan-basics/architecture.png)
 
