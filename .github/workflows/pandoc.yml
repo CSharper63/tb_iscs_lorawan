@@ -7,10 +7,14 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v3
+      - name: create file list
+        id: files_list
+        run: |
+          mkdir output  # create output dir
 
-      - uses: docker://pandoc/latex:2.9
+      - uses: docker://pandoc/extra:latest
         with:
-          args: README.md --output=output/result.pdf ${{ steps.files_list.outputs.files }}
+          args: --volume "$(pwd):/data" --user $(id -u):$(id -g) --listings -V geometry:a4paper,margin=2.5cm -V lang=fr-CH --template eisvogel README.md --output=output/result.pdf ${{ steps.files_list.outputs.files }}
           
       - uses: actions/upload-artifact@v3
         with:
