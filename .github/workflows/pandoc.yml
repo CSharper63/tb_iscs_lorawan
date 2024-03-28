@@ -14,7 +14,7 @@ jobs:
 
       - uses: docker://pandoc/extra:latest
         with:
-          args: --listings -V geometry:a4paper,margin=2.5cm -V lang=fr-CH --template eisvogel README.md --output=output/result.pdf ${{ steps.files_list.outputs.files }}
+          args: --listings -V geometry:a4paper,margin=2.5cm -V lang=fr-CH --template ~/.pandoc/templates/eisvogel.latex README.md --output=output/result.pdf ${{ steps.files_list.outputs.files }}
           
       - uses: actions/upload-artifact@v3
         with:
