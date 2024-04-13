@@ -1,6 +1,6 @@
 name: Convert to pdf
 
-on: push
+on: tag
 
 jobs:
   convert_via_pandoc:
