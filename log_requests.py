@@ -15,25 +15,21 @@ class Logger:
 
             # load CA certificate content
             self.ca_cert_content = self.load_ca_cert_content()
-            
+
             # init files if don't exist
             self.init_file(self.requests_file_path)
             self.init_file(self.wss_messages_file_path)
-            
+
             # open files in read write
             self.requests_file = open(self.requests_file_path, 'r+')
             self.wss_messages_file = open(self.wss_messages_file_path, 'r+')
-            
-            # load existing data
-            self.requests_data = json.load(self.requests_file)
-            self.wss_messages_data = json.load(self.wss_messages_file)
 
         except Exception as e:
             ctx.log.info(f"[{self.timestamp_now()}] Error during Logger initialization: {e}")
-    
+
     def timestamp_now(self):
      return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-    
+
     # as ttn seems to provide cert to gateway
     # this fnct will load it, then will erase on-the-fly response
     def load_ca_cert_content(self):
@@ -53,11 +49,12 @@ class Logger:
             with open(filepath, 'w') as f:
                 json.dump([], f)
 
-    def append_to_file(self, file, data, data_list):
-        data_list.append(data)
-        file.seek(0)  # move to the beginning
-        json.dump(data_list, file, indent=4)  # update json
-        file.truncate()
+    def append_to_file(self, file, data):
+        # if exist already checked before
+        file.seek(0, os.SEEK_END)
+        file.seek(file.tell() - 1, os.SEEK_SET)
+        file.write(',\n' + json.dumps(data, indent=4) + ']')
+        file.flush()
 
     # handle http request
     def request(self, flow: http.HTTPFlow):
@@ -83,7 +80,7 @@ class Logger:
             }
 
             # update file
-            self.append_to_file(self.requests_file, request_info, self.requests_data)
+            self.append_to_file(self.requests_file, request_info)
             ctx.log.info(f"[{timestamp}] Logged HTTP request to {flow.request.host}")
         else:
             # Handle the WebSocket upgrade request
@@ -108,7 +105,7 @@ class Logger:
             }
 
             # update file
-            self.append_to_file(self.wss_messages_file, message_info, self.wss_messages_data)
+            self.append_to_file(self.wss_messages_file, message_info)
 
             ctx.log.info(f"[{timestamp}] Logged WebSocket message from {'client' if message.from_client else 'server'}")
 
