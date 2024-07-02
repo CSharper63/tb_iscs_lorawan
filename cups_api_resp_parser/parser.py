@@ -45,16 +45,14 @@ def parse_response(data):
     offset += 2
 
     #!! tcCred --> SHOULD BE SOMETHING LIKE THIS:
-    # !! trust as PEM FORMAT || cert as DER FORMTAT || key as BEARER FORMAT
+    # !! trust as DER FORMAT || gateway cert as DER FORMTAT || key as BEARER FORMAT
 
     if tcCredLen > 0:
         # Read tcCred (tcCredLen bytes)
         tcCred = data[offset:offset + tcCredLen]
         offset += tcCredLen
-        #print(f'tcCred: {tcCred}')
     else:
         tcCred = ""
-        #print('No update for tcCred')
 
     # read sigLen (4 bytes, little endian)
     sigLen = int.from_bytes(data[offset:offset + 4], byteorder='little')
@@ -97,6 +95,95 @@ def parse_response(data):
         "updLen": updLen,
         "updData": updData
     }
+
+
+def build_payload(data):
+    payload = bytearray()
+
+    #cupsUriLen
+    cupsUri = data.get("cupsUri", "")
+    cupsUriLen = len(cupsUri)
+    payload.append(cupsUriLen)
+
+    # cupsUri (cupsUriLen bytes)
+    if cupsUriLen > 0:
+        payload.extend(cupsUri.encode())
+
+    # tcUriLen
+    tcUri = data.get("tcUri", "")
+    tcUriLen = len(tcUri)
+    payload.append(tcUriLen)
+
+    # tcUri (tcUriLen bytes)
+    if tcUriLen > 0:
+        payload.extend(tcUri.encode())
+
+    # cupsCredLen
+    cupsCred = data.get("cupsCred", b"")
+    cupsCredLen = len(cupsCred)
+    payload.extend(cupsCredLen.to_bytes(2, byteorder='little'))
+
+    #cupsCred (cupsCredLen bytes)
+    if cupsCredLen > 0:
+        payload.extend(cupsCred)
+
+    #  tcCredLen
+    tcCred = data.get("tcCred", b"")
+    tcCredLen = len(tcCred)
+    payload.extend(tcCredLen.to_bytes(2, byteorder='little'))
+
+    # tcCred (tcCredLen bytes)
+    if tcCredLen > 0:
+        payload.extend(tcCred)
+
+    # sigLen
+    sig = data.get("sig", b"")
+    sigLen = len(sig)
+    payload.extend(sigLen.to_bytes(4, byteorder='little'))
+
+    # keyCRC
+    keyCRC = data.get("keyCRC", 0)
+    payload.extend(keyCRC.to_bytes(4, byteorder='little'))
+
+    # sig
+    if sigLen > 0:
+        payload.extend(sig)
+
+    # updLen
+    updData = data.get("updData", b"")
+    updLen = len(updData)
+    payload.extend(updLen.to_bytes(4, byteorder='little'))
+
+    # updData (updLen bytes)
+    if updLen > 0:
+        payload.extend(updData)
+
+    return bytes(payload)
+
+data = {
+    "cupsUri": "",
+    "tcUri": "",
+    "cupsCred": b"",
+    "tcCred": b"",
+    "sig": b"",
+    "keyCRC": 123456789,
+    "updData": b"update_data"
+}
+
+""" from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
+
+def pem_to_der(pem_cert):
+    # Charger le certificat PEM
+    cert = serialization.load_pem_x509_certificate(pem_cert.encode(), default_backend())
+    
+    # Convertir en DER
+    der_cert = cert.public_bytes(encoding=serialization.Encoding.DER)
+    
+    return der_cert
+
+payload = construct_payload(data)
+print(payload) """
 
 
 # this hex come from a real intercepted request from mitmproxy during cups api call
