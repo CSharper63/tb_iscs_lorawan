@@ -155,7 +155,7 @@ class TestSamples:
         # the dev address from our device
         self.own_dev_address = 00000
         # the selected test to run
-        self.selected_test = Test.injectRCE
+        self.selected_test = Test.spoofRssi
         # index used to move through the rce commands array
         self.rce_index = 0
         # commands to test for the Test.injectRCE
@@ -177,7 +177,7 @@ class TestSamples:
             Test.injectRCE: self.inject_rce
         }
         
-    def get_property(data, property_path):
+    def get_property(self, data, property_path):
         #split all keys based on expected path
         keys = property_path.split('.')
         current_data = data
@@ -189,7 +189,7 @@ class TestSamples:
             current_data = current_data[key]
         return current_data
 
-    def set_property(data, property_path, new_value):
+    def set_property(self, data, property_path, new_value):
         keys = property_path.split('.')
         current_data = data
         for key in keys[:-1]:
@@ -214,8 +214,36 @@ class TestSamples:
                 ctx.log.info(f"No test function found for {self.selected_test.value}")
 
     def spoof_rssi(self, flow: http.HTTPFlow):
-        ctx.log.info(f"Executing {self.selected_test.value} test")
-        # todo
+
+        timestamp = self.timestamp_now()
+        message = flow.websocket.messages[-1]
+    
+        ctx.log.info(f"[{timestamp}] Executing: {self.selected_test.value} test")
+    
+        try:
+            content = json.loads(message.content)
+        except json.JSONDecodeError:
+            content = message.content.decode('utf-8', 'replace')
+
+        if message.from_client:
+            ctx.log.info(f"[{timestamp}] Dropping current message...")
+            message.drop()
+            # get the rssi from the json
+            rssi = self.get_property(content, 'upinfo.rssi')
+            
+            # modify the rssi and increase it
+            spoofed_rssi = rssi + 10
+            ctx.log.info(f"New rssi set, real value: {rssi}, injected rssi: {spoofed_rssi}")
+
+            # reinject it in the json
+            self.set_property(content, 'upinfo.rssi', spoofed_rssi)
+
+            # encode the json
+            new_content = json.dumps(content).encode('utf-8')
+            #inject the content in the message
+            message.content = new_content
+
+            # todo: test seems not working as expected -> check if need to recompute some field or hash/crc
 
     def spoof_dev_eui(self, flow: http.HTTPFlow):
         ctx.log.info(f"Executing {self.selected_test.value} test")
@@ -230,7 +258,9 @@ class TestSamples:
         message = flow.websocket.messages[-1]
         if not message.from_client:
             message.drop()
-            ctx.log.info(f"[{timestamp}] Test run: {self.selected_test.value}, RCE command index: {self.rce_index}")
+
+            ctx.log.info(f"[{timestamp}] Executing: {self.selected_test.value} test, RCE command index: {self.rce_index}")
+
             command_bytes = json.dumps(self.rce_commands[self.rce_index]).encode('utf-8')
 
             self.rce_index += 1
