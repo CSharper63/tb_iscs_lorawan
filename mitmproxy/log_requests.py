@@ -151,11 +151,11 @@ class CUPSInterceptor:
 class TestSamples:
     def __init__(self)-> None:
         ctx.log.info(f"init Test Samples")
-
+        self.other_gateway_eui = "24e1:24ff:fef8:0214"
         # the dev address from our device
         self.own_dev_address = 00000
         # the selected test to run
-        self.selected_test = Test.spoofRssi
+        self.selected_test = Test.spoofDevEUI
         # index used to move through the rce commands array
         self.rce_index = 0
         # commands to test for the Test.injectRCE
@@ -213,6 +213,20 @@ class TestSamples:
             else:
                 ctx.log.info(f"No test function found for {self.selected_test.value}")
 
+    # only for spoofDevEUI test as it is a https request and not a wss
+    def request(self, flow: http.HTTPFlow):
+        if self.selected_test == Test.spoofDevEUI:
+            if flow.request.path == "/update-info" \
+                and "application/json" in flow.request.headers.get("Content-Type", ""):
+                try:
+                    data = json.loads(flow.request.content)
+                    data['router'] = self.other_gateway_eui
+                    ctx.log.info(data)
+                    flow.request.content = json.dumps(data).encode('utf-8')
+                except json.JSONDecodeError:
+                    pass
+            
+
     def spoof_rssi(self, flow: http.HTTPFlow):
 
         timestamp = self.timestamp_now()
@@ -225,29 +239,43 @@ class TestSamples:
         except json.JSONDecodeError:
             content = message.content.decode('utf-8', 'replace')
 
-        if message.from_client:
-            ctx.log.info(f"[{timestamp}] Dropping current message...")
-            message.drop()
-            # get the rssi from the json
-            rssi = self.get_property(content, 'upinfo.rssi')
-            
-            # modify the rssi and increase it
-            spoofed_rssi = rssi + 10
-            ctx.log.info(f"New rssi set, real value: {rssi}, injected rssi: {spoofed_rssi}")
+        if message.from_client and flow.websocket is not None:
+            try:
+                rssi = self.get_property(content, 'upinfo.rssi')
+                ctx.log.info(f"[{timestamp}] Dropping current message...")
+                message.drop()
+                # get the rssi from the json
+                
+                # modify the rssi and increase it
+                spoofed_rssi = rssi + 2
+                ctx.log.info(f"New rssi set, real value: {rssi}, injected rssi: {spoofed_rssi}")
 
-            # reinject it in the json
-            self.set_property(content, 'upinfo.rssi', spoofed_rssi)
+                # reinject it in the json
+                self.set_property(content, 'upinfo.rssi', spoofed_rssi)
 
-            # encode the json
-            new_content = json.dumps(content).encode('utf-8')
-            #inject the content in the message
-            message.content = new_content
+                # encode the json
+                new_content = json.dumps(content).encode('utf-8')
+                #inject the content in the message
+                ctx.master.commands.call("inject.websocket", flow, message.from_client,new_content)
+            except Exception as e:
+                ctx.log.error(f"An error occurred in {self.selected_test.value} test: {str(e)}")
 
             # todo: test seems not working as expected -> check if need to recompute some field or hash/crc
 
     def spoof_dev_eui(self, flow: http.HTTPFlow):
         ctx.log.info(f"Executing {self.selected_test.value} test")
-        # todo
+        # intercept /router-info and replace the gateway config by a new one
+        # this is the websocket part of the https then upgraded in wss. The /update-info is not here because is https only so must be handle in request mitmproxy handler
+        if flow.request.path == "/router-info":
+            message = flow.websocket.messages[-1]
+
+            if message.from_client:
+                message.drop()
+                other_gateway_eui = {"router": self.other_gateway_eui}
+                gateway_config = json.dumps(other_gateway_eui).encode('utf-8')
+                ctx.master.commands.call("inject.websocket", flow, message.from_client, gateway_config)
+                ctx.log.info(f"New config injected {other_gateway_eui}")
+    # todo
 
     def spoof_dev_addr(self, flow: http.HTTPFlow):
         ctx.log.info(f"Executing {self.selected_test.value} test")
@@ -272,4 +300,5 @@ class TestSamples:
                     
 
 # add the current logger as new addon on mitmproxy
-addons = [LNSInterceptor(), CUPSInterceptor(), TestSamples()]
+# by default test sample is not enabled
+addons = [LNSInterceptor(), CUPSInterceptor()]
