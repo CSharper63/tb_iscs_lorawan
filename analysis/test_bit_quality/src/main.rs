@@ -1,6 +1,7 @@
 use rand::rngs::OsRng;
 use rand::Rng;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 use statrs::distribution::DiscreteCDF;
 use statrs::distribution::{Binomial, Discrete};
@@ -10,6 +11,13 @@ use std::io::BufReader;
 #[derive(Deserialize)]
 struct MicList {
     mic: Vec<i32>,
+}
+
+#[derive(Serialize)]
+struct Issue {
+    i: u32,
+    odd_count: u32,
+    even_count: u32,
 }
 
 fn find_threshold_odd_count(total_mics: u32, error_threasold: f64) -> u32 {
@@ -27,11 +35,12 @@ fn find_threshold_odd_count(total_mics: u32, error_threasold: f64) -> u32 {
     total_mics
 }
 
-fn test_bit_quality(mic_list: &[i32], verbose: bool) {
-    let mut odd_counts = Vec::new();
+fn test_bit_quality(mic_list: &[i32], verbose: bool) -> Vec<Issue> {
+    // f function, odd_count, even_count
+    let mut issues: Vec<Issue> = Vec::new();
 
     let total_mics = mic_list.len() as u32;
-    let error_threasold = 0.00001;
+    let error_threasold = 0.0000001;
 
     let threshold_odd_count = find_threshold_odd_count(total_mics, error_threasold);
     let in_percent = error_threasold as f64 * 100.0;
@@ -89,12 +98,19 @@ fn test_bit_quality(mic_list: &[i32], verbose: bool) {
                 println!("XOR of all AND results: {:032b}", and_result);
             }
         }
+
         if odd_count < threshold_odd_count || odd_count > expected_even {
             /* even_counts.push(even_count); */
-            println!("Test failed with {:?}, odd: {:?}", i, odd_count);
-            odd_counts.push(odd_count);
+            //println!("Test failed with {:?}, odd: {:?}", i, odd_count);
+            issues.push(Issue {
+                i,
+                odd_count,
+                even_count: total_mics - odd_count,
+            });
         }
     }
+
+    issues
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -103,7 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mic_list: MicList = serde_json::from_reader(reader)?;
 
-    test_bit_quality(&mic_list.mic, false);
+    let issues = test_bit_quality(&mic_list.mic, false);
 
     /* println!("Even counts: {:?}", even_counts);
     println!("Odd counts: {:?}", odd_counts); */
@@ -118,6 +134,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut odd_counts_file = File::create("../odd_counts2.json")?;
     serde_json::to_writer_pretty(&odd_counts_file, &odd_counts_json)?; */
-
+    let issue_json = json!({ "issues": issues });
+    let mut issue_file = File::create("../issue.json")?;
+    serde_json::to_writer_pretty(&issue_file, &issue_json)?;
     Ok(())
 }
