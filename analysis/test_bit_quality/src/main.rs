@@ -153,6 +153,7 @@ fn generate_sample_data(
         let result = mac.finalize();
         let tag_bytes = result.into_bytes();
 
+        // convert to hex and to be stored in string in json
         let ciphertext_hex: String = ciphertext
             .iter()
             .map(|byte| format!("{:x}", byte))
@@ -165,9 +166,11 @@ fn generate_sample_data(
             "cmac_tag": tag_hex,
         });
 
+        // Increment all array
         let mut json_array_lock = json_array.lock().unwrap();
         json_array_lock.push(json_object);
 
+        // These are used to store raw ciphers and mac
         let mut ciphertexts_lock = ciphertexts.lock().unwrap();
         ciphertexts_lock.push(ciphertext.to_vec());
 
