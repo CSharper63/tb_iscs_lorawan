@@ -1,6 +1,14 @@
+use aes::Aes128;
+use aes::Aes256;
+use ccm::{
+    aead::{generic_array::GenericArray, Aead, KeyInit, OsRng},
+    consts::{U10, U13},
+    Ccm,
+};
 use chrono::Utc;
-use rand::rngs::OsRng;
+use cmac::{Cmac, Mac};
 use rand::Rng;
+use rand::RngCore;
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
@@ -110,6 +118,71 @@ fn convert_issues_to_hex(issue_list: IssueList) -> IssueListHex {
         .collect();
     IssueListHex { issues: issues_hex }
 }
+pub type Aes256Ccm = Ccm<Aes256, U10, U13>;
+// used lib:
+// https://crates.io/crates/cmac
+// https://crates.io/crates/ccm
+fn generate_sample_data(
+    num: u32,
+) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
+    let progress_counter = Arc::new(AtomicUsize::new(0));
+    let chunk_size = (num / 100).max(1);
+
+    let json_array = Arc::new(Mutex::new(Vec::new()));
+    let ciphertexts = Arc::new(Mutex::new(Vec::new()));
+    let mac_tags = Arc::new(Mutex::new(Vec::new()));
+
+    (0..=num).into_par_iter().for_each(|counter: u32| {
+        if counter % chunk_size == 0 {
+            let progress = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;
+            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 10000.0));
+        }
+
+        // Encrypt with AES-CCM a random 4-bytes sequence with an incremental counter
+        let key = Aes256Ccm::generate_key(&mut OsRng);
+        let mut plaintext = [0u8; 4];
+        OsRng.fill_bytes(&mut plaintext);
+        let stream = Aes256Ccm::new(&key);
+        let binding = counter.to_be_bytes();
+        let nonce = GenericArray::from_slice(&binding);
+        let ciphertext = stream.encrypt(nonce, plaintext.as_ref()).unwrap();
+
+        // Encrypt then MAC
+        let mut mac = <Cmac<Aes128> as Mac>::new_from_slice(&key).unwrap();
+        mac.update(ciphertext.as_slice());
+        let result = mac.finalize();
+        let tag_bytes = result.into_bytes();
+
+        let ciphertext_hex: String = ciphertext
+            .iter()
+            .map(|byte| format!("{:x}", byte))
+            .collect();
+        let tag_hex: String = tag_bytes.iter().map(|byte| format!("{:x}", byte)).collect();
+
+        // Create JSON object and add to array
+        let json_object = json!({
+            "ccm_ciphertext": ciphertext_hex,
+            "cmac_tag": tag_hex,
+        });
+
+        let mut json_array_lock = json_array.lock().unwrap();
+        json_array_lock.push(json_object);
+
+        let mut ciphertexts_lock = ciphertexts.lock().unwrap();
+        ciphertexts_lock.push(ciphertext.to_vec());
+
+        let mut mac_tags_lock = mac_tags.lock().unwrap();
+        mac_tags_lock.push(tag_bytes.to_vec());
+    });
+
+    let json_array_lock = json_array.lock().unwrap();
+    write_json("output.json", &json!(*json_array_lock))?;
+
+    let ciphertexts_lock = ciphertexts.lock().unwrap().clone();
+    let mac_tags_lock = mac_tags.lock().unwrap().clone();
+
+    Ok((ciphertexts_lock, mac_tags_lock))
+}
 
 fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
     let total_blocks = list_blocks.len() as u32;
@@ -158,6 +231,13 @@ fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    match generate_sample_data(10000) {
+        Ok((ciphertexts, mac_tags)) => {
+            // Do something with the raw ciphertexts and MAC tags
+            println!("Ciphertexts and MAC tags generated successfully and exported.");
+        }
+        Err(e) => eprintln!("Error: {}", e),
+    }
     // process mic list
     /* let mic_list: MicList = read_json("../all_frmpayload.json")?;
     let start_time = Utc::now();
@@ -179,12 +259,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     write_json("../issue_frmpayload.json", &json!({ "issues": issues }))?; */
 
     // convert i to hex:
-    let issue_list: IssueList = read_json("../issue_frmpayload.json")?;
+    /* let issue_list: IssueList = read_json("../issue_frmpayload.json")?;
     let issues_hex = convert_issues_to_hex(issue_list);
     write_json(
         "output_frmpayload_hex.json",
         &json!({ "issue_frmpayload.json": issues_hex }),
-    )?;
+    )?; */
 
     Ok(())
 }
