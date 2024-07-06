@@ -6,6 +6,8 @@ use ccm::{
     Ccm,
 };
 use chrono::Utc;
+use cmac::digest::core_api::CoreWrapper;
+use cmac::CmacCore;
 use cmac::{Cmac, Mac};
 use rand::Rng;
 use rand::RngCore;
@@ -118,7 +120,16 @@ fn convert_issues_to_hex(issue_list: IssueList) -> IssueListHex {
         .collect();
     IssueListHex { issues: issues_hex }
 }
-pub type Aes256Ccm = Ccm<Aes256, U10, U13>;
+pub type Aes128Ccm = Ccm<Aes128, U10, U13>;
+
+fn bytes_to_hex_string(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{:X}", byte))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
 // used lib:
 // https://crates.io/crates/cmac
 // https://crates.io/crates/ccm
@@ -128,47 +139,54 @@ fn generate_sample_data(
     let progress_counter = Arc::new(AtomicUsize::new(0));
     let chunk_size = (num / 100).max(1);
 
-    let json_array = Arc::new(Mutex::new(Vec::new()));
     let ciphertexts = Arc::new(Mutex::new(Vec::new()));
     let mac_tags = Arc::new(Mutex::new(Vec::new()));
 
     (0..=num).into_par_iter().for_each(|counter: u32| {
         if counter % chunk_size == 0 {
             let progress = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 10000.0));
+            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100.0));
         }
 
         // Encrypt with AES-CCM a random 4-bytes sequence with an incremental counter
-        let key = Aes256Ccm::generate_key(&mut OsRng);
-        let mut plaintext = [0u8; 4];
+        let key = Aes128Ccm::generate_key(&mut OsRng);
+        if key.len() != 16 {
+            eprintln!(
+                "Invalid key length: {}. Key must be 16 bytes long.",
+                key.len()
+            );
+            return;
+        }
+        let mut plaintext = [0u8; 10];
+
         OsRng.fill_bytes(&mut plaintext);
-        let stream = Aes256Ccm::new(&key);
-        let binding = counter.to_be_bytes();
-        let nonce = GenericArray::from_slice(&binding);
-        let ciphertext = stream.encrypt(nonce, plaintext.as_ref()).unwrap();
+        let stream = Aes128Ccm::new(&key);
+
+        let mut nonce = [0u8; 13]; // must be 13 byte
+        nonce[..4].copy_from_slice(&counter.to_be_bytes());
+
+        let nonce = GenericArray::from_slice(&nonce);
+
+        let ciphertext = match stream.encrypt(nonce, plaintext.as_ref()) {
+            Ok(ct) => ct,
+            Err(e) => {
+                eprintln!("Encryption error: {}", e);
+                return;
+            }
+        };
 
         // Encrypt then MAC
-        let mut mac = <Cmac<Aes128> as Mac>::new_from_slice(&key).unwrap();
+        let mut mac = match <CoreWrapper<CmacCore<Aes128>> as KeyInit>::new_from_slice(&key) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Failed to initialize MAC: {:?}", e);
+                return;
+            }
+        };
+
         mac.update(ciphertext.as_slice());
         let result = mac.finalize();
         let tag_bytes = result.into_bytes();
-
-        // convert to hex and to be stored in string in json
-        let ciphertext_hex: String = ciphertext
-            .iter()
-            .map(|byte| format!("{:x}", byte))
-            .collect();
-        let tag_hex: String = tag_bytes.iter().map(|byte| format!("{:x}", byte)).collect();
-
-        // Create JSON object and add to array
-        let json_object = json!({
-            "ccm_ciphertext": ciphertext_hex,
-            "cmac_tag": tag_hex,
-        });
-
-        // Increment all array
-        let mut json_array_lock = json_array.lock().unwrap();
-        json_array_lock.push(json_object);
 
         // These are used to store raw ciphers and mac
         let mut ciphertexts_lock = ciphertexts.lock().unwrap();
@@ -178,13 +196,23 @@ fn generate_sample_data(
         mac_tags_lock.push(tag_bytes.to_vec());
     });
 
-    let json_array_lock = json_array.lock().unwrap();
-    write_json("output.json", &json!(*json_array_lock))?;
+    let mut ciphertexts_lock = ciphertexts.lock().unwrap();
+    let ciphertexts_hex: Vec<String> = ciphertexts_lock
+        .iter()
+        .map(|bytes| bytes_to_hex_string(bytes))
+        .collect();
 
-    let ciphertexts_lock = ciphertexts.lock().unwrap().clone();
-    let mac_tags_lock = mac_tags.lock().unwrap().clone();
+    let mut mac_tags_lock = mac_tags.lock().unwrap();
+    let mac_tags_hex: Vec<String> = mac_tags_lock
+        .iter()
+        .map(|bytes| bytes_to_hex_string(bytes))
+        .collect();
 
-    Ok((ciphertexts_lock, mac_tags_lock))
+    write_json("ciphertexts.json", &json!({"ciphertext":ciphertexts_hex}))?;
+
+    write_json("mac.json", &json!({"mac": mac_tags_hex}))?;
+
+    Ok((ciphertexts_lock.to_vec(), mac_tags_lock.to_vec()))
 }
 
 fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
@@ -236,7 +264,8 @@ fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     match generate_sample_data(10000) {
         Ok((ciphertexts, mac_tags)) => {
-            // Do something with the raw ciphertexts and MAC tags
+            // next ->
+            // for each ciphertext
             println!("Ciphertexts and MAC tags generated successfully and exported.");
         }
         Err(e) => eprintln!("Error: {}", e),
