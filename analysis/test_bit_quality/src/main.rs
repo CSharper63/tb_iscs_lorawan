@@ -1,11 +1,15 @@
 use aes::Aes128;
 use aes::Aes256;
+use ccm::aead::Buffer;
 use ccm::{
     aead::{generic_array::GenericArray, Aead, KeyInit, OsRng},
     consts::{U10, U13},
     Ccm,
 };
 use chrono::Utc;
+use cliclack::progress_bar;
+use cliclack::spinner;
+use cliclack::ProgressBar;
 use cmac::digest::core_api::CoreWrapper;
 use cmac::CmacCore;
 use cmac::{Cmac, Mac};
@@ -19,52 +23,16 @@ use statrs::distribution::DiscreteCDF;
 use statrs::distribution::{Binomial, Discrete};
 use std::fs::File;
 use std::io::BufReader;
+use std::io::Read;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::u32;
-
-#[derive(Deserialize)]
-struct MicList {
-    mic: Vec<i32>,
-}
 
 #[derive(Serialize, Debug, Deserialize)]
 struct Issue {
     i: u32,
     odd_count: u32,
     even_count: u32,
-}
-
-#[derive(Deserialize)]
-struct IssueList {
-    issues: Vec<Issue>,
-}
-
-#[derive(Serialize)]
-struct IssueHex {
-    i: String,
-    odd_count: u32,
-    even_count: u32,
-}
-
-#[derive(Serialize)]
-struct IssueListHex {
-    issues: Vec<IssueHex>,
-}
-
-#[derive(Serialize)]
-struct IHexList {
-    i_tab: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct IBinList {
-    i_tab: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct FrmPayloadList {
-    frmpayload: Vec<String>,
 }
 
 fn find_threshold_odd_count(total_blocks: u32, error_threshold: f64) -> u32 {
@@ -76,21 +44,6 @@ fn find_threshold_odd_count(total_blocks: u32, error_threshold: f64) -> u32 {
         }
     }
     total_blocks
-}
-
-fn truncate_frm_payload(frmpayload_list: &FrmPayloadList) -> Vec<i32> {
-    frmpayload_list
-        .frmpayload
-        .iter()
-        .filter_map(|hex_str| {
-            if let Ok(full_value) = u64::from_str_radix(hex_str, 16) {
-                let truncated_value = (full_value & 0xFFFFFFFF) as i32;
-                Some(truncated_value)
-            } else {
-                None
-            }
-        })
-        .collect()
 }
 
 fn read_json<T: for<'de> serde::Deserialize<'de>>(
@@ -108,18 +61,6 @@ fn write_json(path: &str, data: &serde_json::Value) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-fn convert_issues_to_hex(issue_list: IssueList) -> IssueListHex {
-    let issues_hex: Vec<IssueHex> = issue_list
-        .issues
-        .into_iter()
-        .map(|issue| IssueHex {
-            i: format!("{:X}", issue.i),
-            odd_count: issue.odd_count,
-            even_count: issue.even_count,
-        })
-        .collect();
-    IssueListHex { issues: issues_hex }
-}
 pub type Aes128Ccm = Ccm<Aes128, U10, U13>;
 
 fn bytes_to_hex_string(bytes: &[u8]) -> String {
@@ -136,20 +77,27 @@ fn bytes_to_hex_string(bytes: &[u8]) -> String {
 fn generate_sample_data(
     num: u32,
 ) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
+    // todo test une clé pour tous les ciphertexts et une pour les CMAC
+
+    let start_time = Utc::now();
     let progress_counter = Arc::new(AtomicUsize::new(0));
     let chunk_size = (num / 100).max(1);
 
     let ciphertexts = Arc::new(Mutex::new(Vec::new()));
     let mac_tags = Arc::new(Mutex::new(Vec::new()));
+    let spinner = spinner();
+    spinner.start("Generating ciphertexts and MAC...");
 
+    let pb = ProgressBar::new(num as u64);
     (0..=num).into_par_iter().for_each(|counter: u32| {
         if counter % chunk_size == 0 {
             let progress = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100.0));
+            pb.inc(progress.try_into().unwrap());
         }
 
         // Encrypt with AES-CCM a random 4-bytes sequence with an incremental counter
         let key = Aes128Ccm::generate_key(&mut OsRng);
+
         if key.len() != 16 {
             eprintln!(
                 "Invalid key length: {}. Key must be 16 bytes long.",
@@ -189,11 +137,12 @@ fn generate_sample_data(
         let tag_bytes = result.into_bytes();
 
         // These are used to store raw ciphers and mac
-        let mut ciphertexts_lock = ciphertexts.lock().unwrap();
-        ciphertexts_lock.push(ciphertext.to_vec());
+        let mut ciphertexts_lock: std::sync::MutexGuard<Vec<Vec<u8>>> = ciphertexts.lock().unwrap();
 
-        let mut mac_tags_lock = mac_tags.lock().unwrap();
-        mac_tags_lock.push(tag_bytes.to_vec());
+        ciphertexts_lock.push(ciphertext[0..4].to_vec());
+
+        let mut mac_tags_lock: std::sync::MutexGuard<Vec<Vec<u8>>> = mac_tags.lock().unwrap();
+        mac_tags_lock.push(tag_bytes[0..4].to_vec());
     });
 
     let mut ciphertexts_lock = ciphertexts.lock().unwrap();
@@ -208,21 +157,41 @@ fn generate_sample_data(
         .map(|bytes| bytes_to_hex_string(bytes))
         .collect();
 
+    pb.stop("Exporting to json files...");
+
     write_json("ciphertexts.json", &json!({"ciphertext":ciphertexts_hex}))?;
 
     write_json("mac.json", &json!({"mac": mac_tags_hex}))?;
+    let end_time = Utc::now();
+
+    spinner.stop(format!(
+        "Start time: {}\nEnd time: {}",
+        start_time, end_time
+    ));
 
     Ok((ciphertexts_lock.to_vec(), mac_tags_lock.to_vec()))
 }
 
-fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
+// truncate is not a problem while trying to
+fn test_bit_quality(list_blocks: &[Vec<u8>]) -> Vec<Issue> {
+    let start_time = Utc::now();
+    // convert the vector byte to integer representation
+    let list_blocks: Vec<u32> = list_blocks
+        .iter()
+        .map(|b| {
+            // !("{:X?}", b);
+            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+            t
+        })
+        .collect();
+
     let total_blocks = list_blocks.len() as u32;
     let error_threshold = 0.0000001;
     let threshold_odd_count = find_threshold_odd_count(total_blocks, error_threshold);
     let expected_even = total_blocks - threshold_odd_count;
 
     let issues = Arc::new(Mutex::new(Vec::new()));
-    let chunk_size = u32::MAX / 10000;
+    let chunk_size = u32::MAX / 100000;
     let counter = Arc::new(AtomicUsize::new(0));
     let in_percent = error_threshold as f64 * 100.0;
 
@@ -232,15 +201,20 @@ fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
         in_percent, threshold_odd_count
     );
 
+    let spinner = spinner();
+    spinner.start("Generating ciphertexts and MAC...");
+
+    let pb = ProgressBar::new(u32::MAX as u64);
+    pb.start("Starting iterations...");
     (0..=u32::MAX).into_par_iter().for_each(|i| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 10000.0));
+            //println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100000.0));
+            pb.inc(progress.try_into().unwrap()); // Update the progress bar
         }
 
         let mut odd_count = 0;
-        for &mic in list_blocks {
-            let mic = mic as u32; // convert all signed mic
+        for mic in &list_blocks {
             let and_result = i & mic;
             let bit_count = and_result.count_ones();
             let parity = bit_count & 1;
@@ -257,16 +231,29 @@ fn test_bit_quality(list_blocks: &[i32]) -> Vec<Issue> {
             });
         }
     });
+    pb.stop("Iterations finished...");
+
+    let end_time = Utc::now();
+
+    spinner.stop(format!(
+        "Start time: {}\nEnd time: {}",
+        start_time, end_time
+    ));
 
     Arc::try_unwrap(issues).unwrap().into_inner().unwrap()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    match generate_sample_data(10000) {
+    match generate_sample_data(20000) {
         Ok((ciphertexts, mac_tags)) => {
             // next ->
             // for each ciphertext
             println!("Ciphertexts and MAC tags generated successfully and exported.");
+            let issues_cipher = test_bit_quality(&ciphertexts);
+
+            write_json("/issue_cipher.json", &json!({ "issues": issues_cipher }))?;
+            let issues_mac = test_bit_quality(&mac_tags);
+            write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?;
         }
         Err(e) => eprintln!("Error: {}", e),
     }
