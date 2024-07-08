@@ -1,6 +1,5 @@
 use aes::Aes128;
-use aes::Aes256;
-use ccm::aead::Buffer;
+
 use ccm::{
     aead::{generic_array::GenericArray, Aead, KeyInit, OsRng},
     consts::{U10, U13},
@@ -8,23 +7,21 @@ use ccm::{
 };
 use chrono::Utc;
 use cliclack::log;
-use cliclack::progress_bar;
-use cliclack::spinner;
+
 use cliclack::ProgressBar;
 use cmac::digest::core_api::CoreWrapper;
 use cmac::CmacCore;
-use cmac::{Cmac, Mac};
-use rand::Rng;
+use cmac::Mac;
+
 use rand::RngCore;
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
+use statrs::distribution::Binomial;
 use statrs::distribution::DiscreteCDF;
-use statrs::distribution::{Binomial, Discrete};
 use std::fs::File;
-use std::io::BufReader;
-use std::io::Read;
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::u32;
@@ -47,17 +44,17 @@ fn find_threshold_odd_count(total_blocks: u32, error_threshold: f64) -> u32 {
     total_blocks
 }
 
-fn read_json<T: for<'de> serde::Deserialize<'de>>(
+/* fn read_json<T: for<'de> serde::Deserialize<'de>>(
     path: &str,
 ) -> Result<T, Box<dyn std::error::Error>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let data = serde_json::from_reader(reader)?;
     Ok(data)
-}
+} */
 
 fn write_json(path: &str, data: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = File::create(path)?;
+    let file = File::create(path)?;
     serde_json::to_writer_pretty(&file, data)?;
     Ok(())
 }
@@ -180,6 +177,12 @@ fn test_bit_quality(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
     // convert the vector byte to integer representation
+    log::info(format!(
+        "Converting {:?} bytes blocks to integer representation",
+        list_blocks.len()
+    ))
+    .unwrap();
+
     let list_blocks: Vec<u32> = list_blocks
         .iter()
         .map(|b| {
@@ -197,7 +200,7 @@ fn test_bit_quality(
     let odd_counters: Arc<Mutex<Vec<u32>>> =
         Arc::new(Mutex::new(vec![0; total_blocks.try_into().unwrap()]));
 
-    let expected_even = total_blocks - threshold_odd_count;
+    //let expected_even = total_blocks - threshold_odd_count;
 
     let chunk_size = u32::MAX / 100000;
     let counter = Arc::new(AtomicUsize::new(0));
@@ -268,12 +271,13 @@ fn test_bit_quality(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    match generate_sample_data(1000) {
+    match generate_sample_data(10000) {
         Ok((ciphertexts, mac_tags)) => {
             // next ->
             // for each ciphertext
+
             let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_cipher.json");
-            let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_mac.json");
+            let _ = test_bit_quality(&mac_tags, 0.0000001, "odd_dist_mac.json");
 
             /*             let issues_mac = test_bit_quality(&mac_tags);
             write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?; */
