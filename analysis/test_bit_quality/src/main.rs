@@ -7,6 +7,7 @@ use ccm::{
     Ccm,
 };
 use chrono::Utc;
+use cliclack::log;
 use cliclack::progress_bar;
 use cliclack::spinner;
 use cliclack::ProgressBar;
@@ -80,21 +81,12 @@ fn generate_sample_data(
     // todo test une clé pour tous les ciphertexts et une pour les CMAC
 
     let start_time = Utc::now();
-    let progress_counter = Arc::new(AtomicUsize::new(0));
-    let chunk_size = (num / 100).max(1);
 
     let ciphertexts = Arc::new(Mutex::new(Vec::new()));
     let mac_tags = Arc::new(Mutex::new(Vec::new()));
-    let spinner = spinner();
-    spinner.start("Generating ciphertexts and MAC...");
+    log::info(format!("Generating {} ciphertexts and MAC", num)).unwrap();
 
-    let pb = ProgressBar::new(num as u64);
     (0..=num).into_par_iter().for_each(|counter: u32| {
-        if counter % chunk_size == 0 {
-            let progress = progress_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            pb.inc(progress.try_into().unwrap());
-        }
-
         // Encrypt with AES-CCM a random 4-bytes sequence with an incremental counter
         let key = Aes128Ccm::generate_key(&mut OsRng);
 
@@ -105,16 +97,21 @@ fn generate_sample_data(
             );
             return;
         }
-        let mut plaintext = [0u8; 10];
 
+        // generate 10 bytes plaintext
+        let mut plaintext = [0u8; 10];
         OsRng.fill_bytes(&mut plaintext);
+
+        // generate keystream of CCM
         let stream = Aes128Ccm::new(&key);
 
+        // generate 13-bytes nonce based on incremental counter
         let mut nonce = [0u8; 13]; // must be 13 byte
         nonce[..4].copy_from_slice(&counter.to_be_bytes());
 
         let nonce = GenericArray::from_slice(&nonce);
 
+        // encrypt cipher text
         let ciphertext = match stream.encrypt(nonce, plaintext.as_ref()) {
             Ok(ct) => ct,
             Err(e) => {
@@ -123,6 +120,8 @@ fn generate_sample_data(
             }
         };
 
+        // generate new key for mac
+        let key = Aes128Ccm::generate_key(&mut OsRng);
         // Encrypt then MAC
         let mut mac = match <CoreWrapper<CmacCore<Aes128>> as KeyInit>::new_from_slice(&key) {
             Ok(m) => m,
@@ -137,43 +136,48 @@ fn generate_sample_data(
         let tag_bytes = result.into_bytes();
 
         // These are used to store raw ciphers and mac
-        let mut ciphertexts_lock: std::sync::MutexGuard<Vec<Vec<u8>>> = ciphertexts.lock().unwrap();
+        let mut ciphertexts_lock = ciphertexts.lock().unwrap();
 
         ciphertexts_lock.push(ciphertext[0..4].to_vec());
 
-        let mut mac_tags_lock: std::sync::MutexGuard<Vec<Vec<u8>>> = mac_tags.lock().unwrap();
+        let mut mac_tags_lock = mac_tags.lock().unwrap();
         mac_tags_lock.push(tag_bytes[0..4].to_vec());
     });
 
-    let mut ciphertexts_lock = ciphertexts.lock().unwrap();
+    let ciphertexts_lock = ciphertexts.lock().unwrap();
     let ciphertexts_hex: Vec<String> = ciphertexts_lock
         .iter()
         .map(|bytes| bytes_to_hex_string(bytes))
         .collect();
 
-    let mut mac_tags_lock = mac_tags.lock().unwrap();
+    let mac_tags_lock = mac_tags.lock().unwrap();
     let mac_tags_hex: Vec<String> = mac_tags_lock
         .iter()
         .map(|bytes| bytes_to_hex_string(bytes))
         .collect();
-
-    pb.stop("Exporting to json files...");
+    log::info("Exporting to json files...").unwrap();
 
     write_json("ciphertexts.json", &json!({"ciphertext":ciphertexts_hex}))?;
 
     write_json("mac.json", &json!({"mac": mac_tags_hex}))?;
     let end_time = Utc::now();
 
-    spinner.stop(format!(
+    log::warning(format!(
         "Start time: {}\nEnd time: {}",
         start_time, end_time
-    ));
+    ))
+    .unwrap();
 
     Ok((ciphertexts_lock.to_vec(), mac_tags_lock.to_vec()))
 }
 
 // truncate is not a problem while trying to
-fn test_bit_quality(list_blocks: &[Vec<u8>]) -> Vec<Issue> {
+fn test_bit_quality(
+    list_blocks: &[Vec<u8>],
+    error_threshold: f64,
+
+    export_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
     // convert the vector byte to integer representation
     let list_blocks: Vec<u32> = list_blocks
@@ -186,31 +190,32 @@ fn test_bit_quality(list_blocks: &[Vec<u8>]) -> Vec<Issue> {
         .collect();
 
     let total_blocks = list_blocks.len() as u32;
-    let error_threshold = 0.0000001;
+
     let threshold_odd_count = find_threshold_odd_count(total_blocks, error_threshold);
+
+    // init vec counter from 0 to
+    let odd_counters: Arc<Mutex<Vec<u32>>> =
+        Arc::new(Mutex::new(vec![0; total_blocks.try_into().unwrap()]));
+
     let expected_even = total_blocks - threshold_odd_count;
 
-    let issues = Arc::new(Mutex::new(Vec::new()));
     let chunk_size = u32::MAX / 100000;
     let counter = Arc::new(AtomicUsize::new(0));
     let in_percent = error_threshold as f64 * 100.0;
 
-    println!("Count of blocks: {:?}", total_blocks);
-    println!(
-        "Odd count threasold for {:?}% : {:?}",
-        in_percent, threshold_odd_count
-    );
+    log::info(format!(
+        "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
+        total_blocks, in_percent, threshold_odd_count, u32::MAX, total_blocks
+    ))
+    .unwrap();
 
-    let spinner = spinner();
-    spinner.start("Generating ciphertexts and MAC...");
-
-    let pb = ProgressBar::new(u32::MAX as u64);
-    pb.start("Starting iterations...");
+    let pb = Arc::new(Mutex::new(ProgressBar::new(u32::MAX as u64)));
+    pb.lock().unwrap().start("Starting iterations...");
     (0..=u32::MAX).into_par_iter().for_each(|i| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
             //println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100000.0));
-            pb.inc(progress.try_into().unwrap()); // Update the progress bar
+            pb.lock().unwrap().inc(progress.try_into().unwrap()); // Update the progress bar
         }
 
         let mut odd_count = 0;
@@ -222,38 +227,56 @@ fn test_bit_quality(list_blocks: &[Vec<u8>]) -> Vec<Issue> {
                 odd_count += 1;
             }
         }
-        if odd_count < threshold_odd_count || odd_count > expected_even {
+        /* if odd_count < threshold_odd_count || odd_count > expected_even {
             let mut issues = issues.lock().unwrap();
             issues.push(Issue {
                 i,
                 odd_count,
                 even_count: total_blocks - odd_count,
             });
+            // faire un tableau histogramme
+            // je veux une taille de 100 bucket -> 0 max quantity du nombre de message /100
+        } */
+
+        let mut counters = odd_counters.lock().unwrap();
+        if odd_count < counters.len() {
+            counters[odd_count] += 1;
+        } else {
+            log::error(format!(
+                "odd_count {} exceeds counter length {}",
+                odd_count,
+                counters.len()
+            ))
+            .unwrap();
         }
     });
-    pb.stop("Iterations finished...");
+    pb.lock().unwrap().stop("Iterations finished...");
+    let counters = Arc::try_unwrap(odd_counters).unwrap().into_inner().unwrap();
+
+    log::info(format!("Count result exported in {:?}", export_name)).unwrap();
+    write_json("odd_counters.json", &json!({ "counters": counters}))?;
 
     let end_time = Utc::now();
 
-    spinner.stop(format!(
+    log::warning(format!(
         "Start time: {}\nEnd time: {}",
         start_time, end_time
-    ));
+    ))
+    .unwrap();
 
-    Arc::try_unwrap(issues).unwrap().into_inner().unwrap()
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    match generate_sample_data(20000) {
+    match generate_sample_data(1000) {
         Ok((ciphertexts, mac_tags)) => {
             // next ->
             // for each ciphertext
-            println!("Ciphertexts and MAC tags generated successfully and exported.");
-            let issues_cipher = test_bit_quality(&ciphertexts);
+            let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_cipher.json");
+            let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_mac.json");
 
-            write_json("/issue_cipher.json", &json!({ "issues": issues_cipher }))?;
-            let issues_mac = test_bit_quality(&mac_tags);
-            write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?;
+            /*             let issues_mac = test_bit_quality(&mac_tags);
+            write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?; */
         }
         Err(e) => eprintln!("Error: {}", e),
     }
