@@ -96,7 +96,7 @@ fn generate_sample_data(
         }
 
         // generate 10 bytes plaintext
-        let mut plaintext = [0u8; 10];
+        let mut plaintext = [0u8; 4];
         OsRng.fill_bytes(&mut plaintext);
 
         // generate keystream of CCM
