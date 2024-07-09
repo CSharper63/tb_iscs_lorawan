@@ -205,8 +205,8 @@ fn test_bit_quality(
         Arc::new(Mutex::new(vec![0; total_blocks.try_into().unwrap()]));
 
     //let expected_even = total_blocks - threshold_odd_count;
-
-    let chunk_size = u32::MAX / 100000;
+    let ratio = 10000;
+    let chunk_size = u32::MAX / ratio;
     let counter = Arc::new(AtomicUsize::new(0));
     let in_percent = error_threshold as f64 * 100.0;
 
@@ -219,7 +219,7 @@ fn test_bit_quality(
     (0..=u32::MAX).into_par_iter().for_each(|i| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100000.0));
+            println!("Progress: {:.2}%", 100.0 * (progress as f64 / ratio as f64));
         }
 
         let mut odd_count = 0;
