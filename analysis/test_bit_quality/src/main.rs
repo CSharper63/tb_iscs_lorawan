@@ -8,7 +8,6 @@ use ccm::{
 use chrono::Utc;
 use cliclack::log;
 
-use cliclack::ProgressBar;
 use cmac::digest::core_api::CoreWrapper;
 use cmac::CmacCore;
 use cmac::Mac;
@@ -17,10 +16,10 @@ use rand::RngCore;
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use statrs::distribution::Binomial;
 use statrs::distribution::DiscreteCDF;
-use std::fs::File;
+use std::{fs::File, io::Read};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,6 +30,11 @@ struct Issue {
     i: u32,
     odd_count: u32,
     even_count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoRaWanPacket {
+    content: Value,
 }
 
 fn find_threshold_odd_count(total_blocks: u32, error_threshold: f64) -> u32 {
@@ -170,7 +174,7 @@ fn generate_sample_data(
 
 // truncate is not a problem while trying to
 fn test_bit_quality(
-    list_blocks: &[Vec<u8>],
+    list_blocks: &Vec<u32>,
     error_threshold: f64,
 
     export_name: &str,
@@ -183,14 +187,14 @@ fn test_bit_quality(
     ))
     .unwrap();
 
-    let list_blocks: Vec<u32> = list_blocks
-        .iter()
-        .map(|b| {
-            // !("{:X?}", b);
-            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-            t
-        })
-        .collect();
+    /* let list_blocks: Vec<u32> = list_blocks
+    .iter()
+    .map(|b| {
+        // !("{:X?}", b);
+        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+        t
+    })
+    .collect(); */
 
     let total_blocks = list_blocks.len() as u32;
 
@@ -212,17 +216,14 @@ fn test_bit_quality(
     ))
     .unwrap();
 
-    let pb = Arc::new(Mutex::new(ProgressBar::new(u32::MAX as u64)));
-    pb.lock().unwrap().start("Starting iterations...");
     (0..=u32::MAX).into_par_iter().for_each(|i| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            //println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100000.0));
-            pb.lock().unwrap().inc(progress.try_into().unwrap()); // Update the progress bar
+            println!("Progress: {:.2}%", 100.0 * (progress as f64 / 100000.0));
         }
 
         let mut odd_count = 0;
-        for mic in &list_blocks {
+        for &mic in list_blocks {
             let and_result = i & mic;
             let bit_count = and_result.count_ones();
             let parity = bit_count & 1;
@@ -242,22 +243,12 @@ fn test_bit_quality(
         } */
 
         let mut counters = odd_counters.lock().unwrap();
-        if odd_count < counters.len() {
-            counters[odd_count] += 1;
-        } else {
-            log::error(format!(
-                "odd_count {} exceeds counter length {}",
-                odd_count,
-                counters.len()
-            ))
-            .unwrap();
-        }
+        counters[odd_count] += 1;
     });
-    pb.lock().unwrap().stop("Iterations finished...");
     let counters = Arc::try_unwrap(odd_counters).unwrap().into_inner().unwrap();
 
     log::info(format!("Count result exported in {:?}", export_name)).unwrap();
-    write_json("odd_counters.json", &json!({ "counters": counters}))?;
+    write_json(export_name, &json!({ "counters": counters}))?;
 
     let end_time = Utc::now();
 
@@ -270,47 +261,92 @@ fn test_bit_quality(
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    match generate_sample_data(10000) {
-        Ok((ciphertexts, mac_tags)) => {
-            // next ->
-            // for each ciphertext
+fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+    let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes).unwrap();
 
-            let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_cipher.json");
-            let _ = test_bit_quality(&mac_tags, 0.0000001, "odd_dist_mac.json");
+    let mut packet_ciphertexts: Vec<u32> = Vec::new();
+    let mut packet_mic: Vec<u32> = Vec::new();
 
-            /*             let issues_mac = test_bit_quality(&mac_tags);
-            write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?; */
+    for packet in packets {
+        // get only packet with FRMPayload
+        if let Some(frm_payload) = packet.content.get("FRMPayload") {
+            // get only packet with content in payload
+            if !frm_payload.as_str().unwrap_or("").is_empty() && packet.content.get("MIC").is_some()
+            {
+                // get only content with min 4 bytes
+                if frm_payload.as_str().unwrap().as_bytes().len() >= 4 {
+                    /*  println!("{:?}", frm_payload.as_str().unwrap().as_bytes().len());
+                                       println!("{:X?}", frm_payload.as_str().unwrap().as_bytes());
+                                       println!("{:?}", frm_payload.as_str());
+                    */
+                    let payload = u32::from_be_bytes(
+                        frm_payload.as_str().unwrap().as_bytes()[0..4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    packet_ciphertexts.push(payload);
+
+                    let mic = packet.content.get("MIC").unwrap().as_i64().unwrap() as u32;
+                    packet_mic.push(mic);
+
+                    //println!("{:?}, {:?}", payload, mic);
+                };
+            }
         }
-        Err(e) => eprintln!("Error: {}", e),
     }
-    // process mic list
-    /* let mic_list: MicList = read_json("../all_frmpayload.json")?;
-    let start_time = Utc::now();
-    let issues = test_bit_quality(&mic_list.mic);
-    let end_time = Utc::now();
-    println!("Start time: {}", start_time);
-    println!("End time: {}", end_time);
-    write_json("../issue_mic.json", &json!({ "issues": issues }))?; */
 
-    // process frm payload
-    /* let frmpayload_list = read_json("../all_frmpayload.json")?;
-    let truncated_mic_list = truncate_frm_payload(&frmpayload_list);
+    Ok((packet_mic, packet_ciphertexts))
+}
 
-    let start_time = Utc::now();
-    let issues = test_bit_quality(&truncated_mic_list);
-    let end_time = Utc::now();
-    println!("Start time: {}", start_time);
-    println!("End time: {}", end_time);
-    write_json("../issue_frmpayload.json", &json!({ "issues": issues }))?; */
+enum DataSet {
+    Synthetic,
+    Real,
+}
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let seleted_dataset = DataSet::Real;
 
-    // convert i to hex:
-    /* let issue_list: IssueList = read_json("../issue_frmpayload.json")?;
-    let issues_hex = convert_issues_to_hex(issue_list);
-    write_json(
-        "output_frmpayload_hex.json",
-        &json!({ "issue_frmpayload.json": issues_hex }),
-    )?; */
+    match seleted_dataset {
+        DataSet::Synthetic => {
+            match generate_sample_data(10000) {
+                Ok((ciphertexts, mac_tags)) => {
+                    let ciphertexts = ciphertexts
+                        .iter()
+                        .map(|b| {
+                            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+                            t
+                        })
+                        .collect();
+
+                    let mac_tags: Vec<u32> = mac_tags
+                        .iter()
+                        .map(|b| {
+                            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+                            t
+                        })
+                        .collect();
+
+                    // next ->
+                    // for each ciphertext
+
+                    let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_cipher.json");
+                    let _ = test_bit_quality(&mac_tags, 0.0000001, "odd_dist_mac.json");
+
+                    /*             let issues_mac = test_bit_quality(&mac_tags);
+                    write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?; */
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+        DataSet::Real => match extract_mic_cipher("wss_messages.json") {
+            Ok((ciphertexts, mac_tags)) => {
+                let _ = test_bit_quality(&ciphertexts, 0.0000001, "real_odd_dist_cipher.json");
+                let _ = test_bit_quality(&mac_tags, 0.0000001, "real_odd_dist_mac.json");
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        },
+    }
 
     Ok(())
 }
