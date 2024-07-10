@@ -196,33 +196,35 @@ fn test_bit_quality(
     })
     .collect(); */
 
+    let iterations = u32::MAX;
+
     let total_blocks = list_blocks.len() as u32;
 
     let threshold_odd_count = find_threshold_odd_count(total_blocks, error_threshold);
 
     // init vec counter from 0 to
-    let odd_counters: Arc<Mutex<Vec<u32>>> =
-        Arc::new(Mutex::new(vec![0; total_blocks.try_into().unwrap()]));
+    let odd_counters: Arc<Vec<AtomicUsize>> =
+        Arc::new((0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect());
 
     //let expected_even = total_blocks - threshold_odd_count;
     let ratio = 10000;
-    let chunk_size = u32::MAX / ratio;
+    let chunk_size = iterations / ratio;
     let counter = Arc::new(AtomicUsize::new(0));
     let in_percent = error_threshold as f64 * 100.0;
 
     log::info(format!(
         "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
-        total_blocks, in_percent, threshold_odd_count, u32::MAX, total_blocks
+        total_blocks, in_percent, threshold_odd_count, iterations, total_blocks
     ))
     .unwrap();
 
-    (0..=u32::MAX).into_par_iter().for_each(|i| {
+    (0..=iterations).into_par_iter().for_each(|i| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
             println!("Progress: {:.2}%", 100.0 * (progress as f64 / ratio as f64));
         }
 
-        let mut odd_count = 0;
+        let mut odd_count: usize = 0;
         for &mic in list_blocks {
             let and_result = i & mic;
             let bit_count = and_result.count_ones();
@@ -242,12 +244,16 @@ fn test_bit_quality(
             // je veux une taille de 100 bucket -> 0 max quantity du nombre de message /100
         } */
 
-        let mut counters = odd_counters.lock().unwrap();
-        counters[odd_count] += 1;
+        odd_counters[odd_count].fetch_add(1, Ordering::SeqCst);
     });
-    let counters = Arc::try_unwrap(odd_counters).unwrap().into_inner().unwrap();
+
+    let counters: Vec<usize> = odd_counters
+        .iter()
+        .map(|counter| counter.load(Ordering::SeqCst))
+        .collect();
 
     log::info(format!("Count result exported in {:?}", export_name)).unwrap();
+
     write_json(export_name, &json!({ "counters": counters}))?;
 
     let end_time = Utc::now();
@@ -281,14 +287,17 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
                                        println!("{:X?}", frm_payload.as_str().unwrap().as_bytes());
                                        println!("{:?}", frm_payload.as_str());
                     */
+
                     let payload = u32::from_be_bytes(
                         frm_payload.as_str().unwrap().as_bytes()[0..4]
                             .try_into()
                             .unwrap(),
                     );
+
                     packet_ciphertexts.push(payload);
 
                     let mic = packet.content.get("MIC").unwrap().as_i64().unwrap() as u32;
+
                     packet_mic.push(mic);
 
                     //println!("{:?}, {:?}", payload, mic);
@@ -342,7 +351,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // tested on commit: 905fd51e26a3b6916bebeb95a8219690274613d9
         DataSet::Real => match extract_mic_cipher("wss_messages.json") {
             Ok((ciphertexts, mac_tags)) => {
-                let _ = test_bit_quality(&ciphertexts, 0.0000001, "real_odd_dist_cipher.json");
+                //let _ = test_bit_quality(&ciphertexts, 0.0000001, "real_odd_dist_cipher.json");
                 let _ = test_bit_quality(&mac_tags, 0.0000001, "real_odd_dist_mac.json");
             }
             Err(e) => eprintln!("Error: {}", e),
