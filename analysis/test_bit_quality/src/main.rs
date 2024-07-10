@@ -1,5 +1,9 @@
-use aes::Aes128;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::u32;
+use std::{fs::File, io::Read};
 
+use aes::Aes128;
 use ccm::{
     aead::{generic_array::GenericArray, Aead, KeyInit, OsRng},
     consts::{U10, U13},
@@ -7,23 +11,17 @@ use ccm::{
 };
 use chrono::Utc;
 use cliclack::log;
-
 use cmac::digest::core_api::CoreWrapper;
 use cmac::CmacCore;
 use cmac::Mac;
-
 use rand::RngCore;
 use rayon::prelude::*;
+use serde::de::Unexpected::Option;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 use statrs::distribution::Binomial;
 use statrs::distribution::DiscreteCDF;
-use std::{fs::File, io::Read};
-
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::u32;
 
 #[derive(Serialize, Debug, Deserialize)]
 struct Issue {
@@ -172,11 +170,14 @@ fn generate_sample_data(
     Ok((ciphertexts_lock.to_vec(), mac_tags_lock.to_vec()))
 }
 
-// truncate is not a problem while trying to
+enum TestType {
+    Binomial,
+    OddCountOnly,
+}
+
 fn test_bit_quality(
     list_blocks: &Vec<u32>,
-    error_threshold: f64,
-
+    error_threshold: std::option::Option<f64>,
     export_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
@@ -187,74 +188,112 @@ fn test_bit_quality(
     ))
     .unwrap();
 
-    /* let list_blocks: Vec<u32> = list_blocks
-    .iter()
-    .map(|b| {
-        // !("{:X?}", b);
-        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-        t
-    })
-    .collect(); */
+    let test_type = if error_threshold.is_some() {
+        TestType::Binomial
+    } else {
+        TestType::OddCountOnly
+    };
 
     let iterations = u32::MAX;
 
     let total_blocks = list_blocks.len() as u32;
 
-    let threshold_odd_count = find_threshold_odd_count(total_blocks, error_threshold);
-
-    // init vec counter from 0 to
-    let odd_counters: Arc<Vec<AtomicUsize>> =
-        Arc::new((0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect());
-
-    //let expected_even = total_blocks - threshold_odd_count;
+    // progression parameters
     let ratio = 10000;
     let chunk_size = iterations / ratio;
     let counter = Arc::new(AtomicUsize::new(0));
-    let in_percent = error_threshold as f64 * 100.0;
+    let in_percent = error_threshold.unwrap() as f64 * 100.0;
 
-    log::info(format!(
-        "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
-        total_blocks, in_percent, threshold_odd_count, iterations, total_blocks
-    ))
-    .unwrap();
-
-    (0..=iterations).into_par_iter().for_each(|i| {
+    let update_progress = |i: u32| {
         if i % chunk_size == 0 {
             let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
             println!("Progress: {:.2}%", 100.0 * (progress as f64 / ratio as f64));
         }
+    };
 
-        let mut odd_count: usize = 0;
-        for &mic in list_blocks {
-            let and_result = i & mic;
-            let bit_count = and_result.count_ones();
-            let parity = bit_count & 1;
-            if parity == 1 {
-                odd_count += 1;
-            }
-        }
-        /* if odd_count < threshold_odd_count || odd_count > expected_even {
-            let mut issues = issues.lock().unwrap();
-            issues.push(Issue {
-                i,
-                odd_count,
-                even_count: total_blocks - odd_count,
+    // init of param for each test
+    match test_type {
+        // this branch will init the binomial test, finding the threshold and compute the test based on 4 bytes block on value AND f fonction in 2**32 range
+        TestType::Binomial => {
+            let threshold_odd_count =
+                find_threshold_odd_count(total_blocks, error_threshold.unwrap()) as usize;
+            let expected_even = total_blocks as usize - threshold_odd_count;
+
+            let issues = Arc::new(Mutex::new(Vec::new()));
+
+            log::info(format!(
+                "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
+                total_blocks, in_percent, threshold_odd_count, iterations, total_blocks
+            ))
+            .unwrap();
+
+            // this code will be replicated to avoid perf issue while compute if condition if Binomial or oddCountOnly.
+            (0..=iterations).into_par_iter().for_each(|i| {
+                update_progress(i);
+
+                let mut odd_count: usize = 0;
+                for &mic in list_blocks {
+                    let and_result = i & mic;
+                    let bit_count = and_result.count_ones();
+                    let parity = bit_count & 1;
+                    if parity == 1 {
+                        odd_count += 1;
+                    }
+                }
+                // executing test
+                if odd_count < threshold_odd_count || odd_count > expected_even {
+                    let mut issues = issues.lock().unwrap();
+                    issues.push(Issue {
+                        i,
+                        odd_count: odd_count as u32,
+                        even_count: total_blocks - odd_count as u32,
+                    });
+                }
             });
-            // faire un tableau histogramme
-            // je veux une taille de 100 bucket -> 0 max quantity du nombre de message /100
-        } */
 
-        odd_counters[odd_count].fetch_add(1, Ordering::SeqCst);
-    });
+            // export while test is finished:
+            let issue_json =
+                json!({ "invalid":  Arc::try_unwrap(issues).unwrap().into_inner().unwrap() });
+            write_json(export_name, &json!({ "invalid": issue_json}))?;
+        }
+        // this branch will count all 1-bit odd of the AND(4-byte_bloc, f_function) f_function in 0-2**32
+        TestType::OddCountOnly => {
+            let odd_counters: Arc<Vec<AtomicUsize>> =
+                Arc::new((0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect());
 
-    let counters: Vec<usize> = odd_counters
-        .iter()
-        .map(|counter| counter.load(Ordering::SeqCst))
-        .collect();
+            log::info(format!(
+                "- Count of blocks: {:?}\n- Testing {} masks over {} data blocks",
+                total_blocks, iterations, total_blocks
+            ))
+            .unwrap();
 
-    log::info(format!("Count result exported in {:?}", export_name)).unwrap();
+            // running test
+            (0..=iterations).into_par_iter().for_each(|i| {
+                update_progress(i);
 
-    write_json(export_name, &json!({ "counters": counters}))?;
+                let mut odd_count: usize = 0;
+                for &mic in list_blocks {
+                    let and_result = i & mic;
+                    let bit_count = and_result.count_ones();
+                    let parity = bit_count & 1;
+                    if parity == 1 {
+                        odd_count += 1;
+                    }
+                }
+
+                odd_counters[odd_count].fetch_add(1, Ordering::SeqCst);
+            });
+
+            // export atomic counters to usize vector
+            let counters: Vec<usize> = odd_counters
+                .iter()
+                .map(|counter| counter.load(Ordering::SeqCst))
+                .collect();
+            // export json
+            write_json(export_name, &json!({ "counters": counters}))?;
+            log::info(format!("Count result exported in {:?}", export_name)).unwrap();
+        }
+    }
 
     let end_time = Utc::now();
 
@@ -283,11 +322,6 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
             {
                 // get only content with min 4 bytes
                 if frm_payload.as_str().unwrap().as_bytes().len() >= 4 {
-                    /*  println!("{:?}", frm_payload.as_str().unwrap().as_bytes().len());
-                                       println!("{:X?}", frm_payload.as_str().unwrap().as_bytes());
-                                       println!("{:?}", frm_payload.as_str());
-                    */
-
                     let payload = u32::from_be_bytes(
                         frm_payload.as_str().unwrap().as_bytes()[0..4]
                             .try_into()
@@ -299,8 +333,6 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
                     let mic = packet.content.get("MIC").unwrap().as_i64().unwrap() as u32;
 
                     packet_mic.push(mic);
-
-                    //println!("{:?}, {:?}", payload, mic);
                 };
             }
         }
@@ -317,42 +349,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let seleted_dataset = DataSet::Real;
 
     match seleted_dataset {
-        DataSet::Synthetic => {
-            match generate_sample_data(10000) {
-                Ok((ciphertexts, mac_tags)) => {
-                    let ciphertexts = ciphertexts
-                        .iter()
-                        .map(|b| {
-                            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-                            t
-                        })
-                        .collect();
+        DataSet::Synthetic => match generate_sample_data(10000) {
+            Ok((ciphertexts, mac_tags)) => {
+                let ciphertexts = ciphertexts
+                    .iter()
+                    .map(|b| {
+                        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+                        t
+                    })
+                    .collect();
 
-                    let mac_tags: Vec<u32> = mac_tags
-                        .iter()
-                        .map(|b| {
-                            let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-                            t
-                        })
-                        .collect();
+                let mac_tags: Vec<u32> = mac_tags
+                    .iter()
+                    .map(|b| {
+                        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
+                        t
+                    })
+                    .collect();
 
-                    // next ->
-                    // for each ciphertext
-
-                    let _ = test_bit_quality(&ciphertexts, 0.0000001, "odd_dist_cipher.json");
-                    let _ = test_bit_quality(&mac_tags, 0.0000001, "odd_dist_mac.json");
-
-                    /*             let issues_mac = test_bit_quality(&mac_tags);
-                    write_json("/issue_mac.json", &json!({ "issues": issues_mac }))?; */
-                }
-                Err(e) => eprintln!("Error: {}", e),
+                let _ = test_bit_quality(&ciphertexts, None, "odd_dist_cipher.json");
+                let _ = test_bit_quality(&mac_tags, None, "odd_dist_mac.json");
             }
-        }
+            Err(e) => eprintln!("Error: {}", e),
+        },
         // tested on commit: 905fd51e26a3b6916bebeb95a8219690274613d9
+        // min threshold 0.0000001
         DataSet::Real => match extract_mic_cipher("wss_messages.json") {
             Ok((ciphertexts, mac_tags)) => {
-                //let _ = test_bit_quality(&ciphertexts, 0.0000001, "real_odd_dist_cipher.json");
-                let _ = test_bit_quality(&mac_tags, 0.0000001, "real_odd_dist_mac.json");
+                let _ = test_bit_quality(
+                    &ciphertexts,
+                    Some(0.0000001),
+                    "real_binomial_test_cipher.json",
+                );
+                let _ = test_bit_quality(&mac_tags, Some(0.0000001), "real_binomial_test_mac.json");
             }
             Err(e) => eprintln!("Error: {}", e),
         },
