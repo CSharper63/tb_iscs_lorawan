@@ -195,7 +195,7 @@ fn test_bit_quality(
     let total_blocks = list_blocks.len() as u32;
 
     // progression parameters
-    let ratio = 10000;
+    let ratio = 1000;
     let chunk_size = iterations / ratio;
     let counter = Arc::new(AtomicUsize::new(0));
 
@@ -213,7 +213,8 @@ fn test_bit_quality(
             let threshold_odd_count = find_threshold_odd_count(total_blocks, threshold) as usize;
             let expected_even = total_blocks as usize - threshold_odd_count;
 
-            let issues = Arc::new(Mutex::new(Vec::new()));
+            let issues: Vec<AtomicUsize> =
+                (0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect();
 
             let in_percent = threshold as f64 * 100.0;
 
@@ -238,18 +239,12 @@ fn test_bit_quality(
                 }
                 // executing test
                 if odd_count < threshold_odd_count || odd_count > expected_even {
-                    let mut issues = issues.lock().unwrap();
-                    issues.push(Issue {
-                        i,
-                        odd_count: odd_count as u32,
-                        even_count: total_blocks - odd_count as u32,
-                    });
+                    issues[odd_count].fetch_add(1, Ordering::SeqCst);
                 }
             });
 
             // export while test is finished:
-            let issue_json =
-                json!({ "invalid":  Arc::try_unwrap(issues).unwrap().into_inner().unwrap() });
+            let issue_json = json!({ "invalid_odd":  issues});
             write_json(export_name, &json!({ "invalid": issue_json}))?;
         }
         // this branch will count all 1-bit odd of the AND(4-byte_bloc, f_function) f_function in 0-2**32
@@ -320,6 +315,7 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
         let Some(payload) = frm_payload.as_str() else {
             continue;
         };
+        //print!("payload: {:?}", payload);
 
         // get only if mic exists
         let Some(mic) = packet.content.get("MIC") else {
@@ -331,7 +327,13 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
             continue;
         };
 
-        let payload = u32::from_str_radix(payload, 16).unwrap();
+        let payload = match u32::from_str_radix(&payload[0..8], 16) {
+            Ok(payload) => payload,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                continue;
+            }
+        };
 
         // add only if unique
         if !packet_ciphertexts.contains(&payload) {
