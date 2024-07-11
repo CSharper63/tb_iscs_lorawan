@@ -10,13 +10,11 @@ use ccm::{
     Ccm,
 };
 use chrono::Utc;
-use cliclack::log;
 use cmac::digest::core_api::CoreWrapper;
 use cmac::CmacCore;
 use cmac::Mac;
 use rand::RngCore;
 use rayon::prelude::*;
-use serde::de::Unexpected::Option;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -63,14 +61,6 @@ fn write_json(path: &str, data: &serde_json::Value) -> Result<(), Box<dyn std::e
 
 pub type Aes128Ccm = Ccm<Aes128, U10, U13>;
 
-fn bytes_to_hex_string(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|byte| format!("{:X}", byte))
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 // used lib:
 // https://crates.io/crates/cmac
 // https://crates.io/crates/ccm
@@ -79,7 +69,7 @@ fn generate_sample_data(num: u32) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
 
     let ciphertexts = Mutex::new(Vec::new());
     let mac_tags = Mutex::new(Vec::new());
-    log::info(format!("Generating {} ciphertexts and MAC", num)).unwrap();
+    println!("Generating {} ciphertexts and MAC", num);
 
     (0..=num).into_par_iter().for_each(|counter: u32| {
         // Encrypt with AES-CCM a random 4-bytes sequence with an incremental counter
@@ -156,18 +146,14 @@ fn generate_sample_data(num: u32) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
         .iter()
         .map(|bytes| format!("{:X?}", bytes))
         .collect();
-    log::info("Exporting to json files...").unwrap();
+    println!("Exporting to json files...");
 
     write_json("ciphertexts.json", &json!({"ciphertext":ciphertexts_hex}))?;
 
     write_json("mac.json", &json!({"mac": mac_tags_hex}))?;
     let end_time = Utc::now();
 
-    log::warning(format!(
-        "Start time: {}\nEnd time: {}",
-        start_time, end_time
-    ))
-    .unwrap();
+    println!("Start time: {}\nEnd time: {}", start_time, end_time);
 
     Ok((ciphertexts, mac_tags))
 }
@@ -184,11 +170,10 @@ fn test_bit_quality(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
     // convert the vector byte to integer representation
-    log::info(format!(
+    println!(
         "Converting {:?} bytes blocks to integer representation",
         list_blocks.len()
-    ))
-    .unwrap();
+    );
 
     let iterations = u32::MAX;
 
@@ -218,11 +203,10 @@ fn test_bit_quality(
 
             let in_percent = threshold as f64 * 100.0;
 
-            log::info(format!(
-                "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
+            println!(
+                "- Binomial test\n- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
                 total_blocks, in_percent, threshold_odd_count, iterations, total_blocks
-            ))
-                .unwrap();
+            );
 
             // this code will be replicated to avoid perf issue while compute if condition if Binomial or oddCountOnly.
             (0..=iterations).into_par_iter().for_each(|i| {
@@ -252,11 +236,10 @@ fn test_bit_quality(
             let odd_counters: Vec<AtomicUsize> =
                 (0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect();
 
-            log::info(format!(
-                "- Count of blocks: {:?}\n- Testing {} masks over {} data blocks",
+            println!(
+                "- Odd count test\n- Count of blocks: {:?}\n- Testing {} masks over {} data blocks",
                 total_blocks, iterations, total_blocks
-            ))
-            .unwrap();
+            );
 
             // running test
             (0..=iterations).into_par_iter().for_each(|i| {
@@ -282,17 +265,13 @@ fn test_bit_quality(
                 .collect();
             // export json
             write_json(export_name, &json!({ "counters": counters}))?;
-            log::info(format!("Count result exported in {:?}", export_name)).unwrap();
+            println!("Count result exported in {:?}", export_name);
         }
     }
 
     let end_time = Utc::now();
 
-    log::warning(format!(
-        "Start time: {}\nEnd time: {}",
-        start_time, end_time
-    ))
-    .unwrap();
+    println!("Start time: {}\nEnd time: {}", start_time, end_time);
 
     Ok(())
 }
@@ -392,7 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => eprintln!("Error: {}", e),
         },
-        // tested on commit: 905fd51e26a3b6916bebeb95a8219690274613d9
+        // tested on commit: 3a78ecf0e98642999d25865305c28a348804e3d6
         // min threshold 0.0000001
         DataSet::Real => match extract_mic_cipher("wss_messages.json") {
             Ok((ciphertexts, mac_tags)) => {
