@@ -363,7 +363,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     TestType::Binomial {
                         threshold: 0.0000001,
                     },
-                    format!("{}_synthetic_binomial_test_cipher.json", ciphertexts.len()).as_str(),
+                    format!(
+                        "{}_synthetic_binomial_test_ciphertexts.json",
+                        ciphertexts.len()
+                    )
+                    .as_str(),
                 );
                 let _ = test_bit_quality(
                     &mac_tags,
@@ -376,7 +380,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = test_bit_quality(
                     &ciphertexts,
                     TestType::OddCountOnly,
-                    format!("{}_synthetic_odd_test_cipher.json", ciphertexts.len()).as_str(),
+                    format!("{}_synthetic_odd_test_ciphertexts.json", ciphertexts.len()).as_str(),
                 );
                 let _ = test_bit_quality(
                     &mac_tags,
