@@ -74,15 +74,11 @@ fn bytes_to_hex_string(bytes: &[u8]) -> String {
 // used lib:
 // https://crates.io/crates/cmac
 // https://crates.io/crates/ccm
-fn generate_sample_data(
-    num: u32,
-) -> Result<(Vec<Vec<u8>>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
-    // todo test une clé pour tous les ciphertexts et une pour les CMAC
-
+fn generate_sample_data(num: u32) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
 
-    let ciphertexts = Arc::new(Mutex::new(Vec::new()));
-    let mac_tags = Arc::new(Mutex::new(Vec::new()));
+    let ciphertexts = Mutex::new(Vec::new());
+    let mac_tags = Mutex::new(Vec::new());
     log::info(format!("Generating {} ciphertexts and MAC", num)).unwrap();
 
     (0..=num).into_par_iter().for_each(|counter: u32| {
@@ -133,26 +129,32 @@ fn generate_sample_data(
         mac.update(ciphertext.as_slice());
         let result = mac.finalize();
         let tag_bytes = result.into_bytes();
+        let tag_bytes = u32::from_le_bytes(tag_bytes.as_slice().try_into().unwrap());
+
+        // convert vec u8 to u32
+        let ciphertext = u32::from_le_bytes(ciphertext.as_slice().try_into().unwrap());
 
         // These are used to store raw ciphers and mac
         let mut ciphertexts_lock = ciphertexts.lock().unwrap();
 
-        ciphertexts_lock.push(ciphertext[0..4].to_vec());
+        //
+        ciphertexts_lock.push(ciphertext);
 
         let mut mac_tags_lock = mac_tags.lock().unwrap();
-        mac_tags_lock.push(tag_bytes[0..4].to_vec());
+        mac_tags_lock.push(tag_bytes);
     });
 
-    let ciphertexts_lock = ciphertexts.lock().unwrap();
-    let ciphertexts_hex: Vec<String> = ciphertexts_lock
+    let ciphertexts = ciphertexts.into_inner().unwrap();
+
+    let ciphertexts_hex: Vec<String> = ciphertexts
         .iter()
-        .map(|bytes| bytes_to_hex_string(bytes))
+        .map(|bytes| format!("{:X?}", bytes))
         .collect();
 
-    let mac_tags_lock = mac_tags.lock().unwrap();
-    let mac_tags_hex: Vec<String> = mac_tags_lock
+    let mac_tags = mac_tags.into_inner().unwrap();
+    let mac_tags_hex: Vec<String> = mac_tags
         .iter()
-        .map(|bytes| bytes_to_hex_string(bytes))
+        .map(|bytes| format!("{:X?}", bytes))
         .collect();
     log::info("Exporting to json files...").unwrap();
 
@@ -167,17 +169,17 @@ fn generate_sample_data(
     ))
     .unwrap();
 
-    Ok((ciphertexts_lock.to_vec(), mac_tags_lock.to_vec()))
+    Ok((ciphertexts, mac_tags))
 }
 
 enum TestType {
-    Binomial,
+    Binomial { threshold: f64 },
     OddCountOnly,
 }
 
 fn test_bit_quality(
     list_blocks: &Vec<u32>,
-    error_threshold: std::option::Option<f64>,
+    test_type: TestType,
     export_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
@@ -188,12 +190,6 @@ fn test_bit_quality(
     ))
     .unwrap();
 
-    let test_type = if error_threshold.is_some() {
-        TestType::Binomial
-    } else {
-        TestType::OddCountOnly
-    };
-
     let iterations = u32::MAX;
 
     let total_blocks = list_blocks.len() as u32;
@@ -202,7 +198,6 @@ fn test_bit_quality(
     let ratio = 10000;
     let chunk_size = iterations / ratio;
     let counter = Arc::new(AtomicUsize::new(0));
-    let in_percent = error_threshold.unwrap() as f64 * 100.0;
 
     let update_progress = |i: u32| {
         if i % chunk_size == 0 {
@@ -214,18 +209,19 @@ fn test_bit_quality(
     // init of param for each test
     match test_type {
         // this branch will init the binomial test, finding the threshold and compute the test based on 4 bytes block on value AND f fonction in 2**32 range
-        TestType::Binomial => {
-            let threshold_odd_count =
-                find_threshold_odd_count(total_blocks, error_threshold.unwrap()) as usize;
+        TestType::Binomial { threshold } => {
+            let threshold_odd_count = find_threshold_odd_count(total_blocks, threshold) as usize;
             let expected_even = total_blocks as usize - threshold_odd_count;
 
             let issues = Arc::new(Mutex::new(Vec::new()));
+
+            let in_percent = threshold as f64 * 100.0;
 
             log::info(format!(
                 "- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
                 total_blocks, in_percent, threshold_odd_count, iterations, total_blocks
             ))
-            .unwrap();
+                .unwrap();
 
             // this code will be replicated to avoid perf issue while compute if condition if Binomial or oddCountOnly.
             (0..=iterations).into_par_iter().for_each(|i| {
@@ -258,8 +254,8 @@ fn test_bit_quality(
         }
         // this branch will count all 1-bit odd of the AND(4-byte_bloc, f_function) f_function in 0-2**32
         TestType::OddCountOnly => {
-            let odd_counters: Arc<Vec<AtomicUsize>> =
-                Arc::new((0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect());
+            let odd_counters: Vec<AtomicUsize> =
+                (0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect();
 
             log::info(format!(
                 "- Count of blocks: {:?}\n- Testing {} masks over {} data blocks",
@@ -316,25 +312,36 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
 
     for packet in packets {
         // get only packet with FRMPayload
-        if let Some(frm_payload) = packet.content.get("FRMPayload") {
-            // get only packet with content in payload
-            if !frm_payload.as_str().unwrap_or("").is_empty() && packet.content.get("MIC").is_some()
-            {
-                // get only content with min 4 bytes
-                if frm_payload.as_str().unwrap().as_bytes().len() >= 4 {
-                    let payload = u32::from_be_bytes(
-                        frm_payload.as_str().unwrap().as_bytes()[0..4]
-                            .try_into()
-                            .unwrap(),
-                    );
+        let Some(frm_payload) = packet.content.get("FRMPayload") else {
+            continue;
+        };
 
-                    packet_ciphertexts.push(payload);
+        // get only packet with content in payload
+        let Some(payload) = frm_payload.as_str() else {
+            continue;
+        };
 
-                    let mic = packet.content.get("MIC").unwrap().as_i64().unwrap() as u32;
+        // get only if mic exists
+        let Some(mic) = packet.content.get("MIC") else {
+            continue;
+        };
 
-                    packet_mic.push(mic);
-                };
-            }
+        // get only content with min 4 bytes -> 8*4 bytes as it s a string
+        if payload.len() < 8 {
+            continue;
+        };
+
+        let payload = u32::from_str_radix(payload, 16).unwrap();
+
+        // add only if unique
+        if !packet_ciphertexts.contains(&payload) {
+            packet_ciphertexts.push(payload);
+        }
+
+        let mic = mic.as_i64().unwrap() as u32;
+
+        if !packet_mic.contains(&mic) {
+            packet_mic.push(mic);
         }
     }
 
@@ -346,29 +353,36 @@ enum DataSet {
     Real,
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let seleted_dataset = DataSet::Real;
-
-    match seleted_dataset {
-        DataSet::Synthetic => match generate_sample_data(10000) {
+    let selected_dataset = DataSet::Real;
+    match selected_dataset {
+        DataSet::Synthetic => match generate_sample_data(30000) {
             Ok((ciphertexts, mac_tags)) => {
-                let ciphertexts = ciphertexts
-                    .iter()
-                    .map(|b| {
-                        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-                        t
-                    })
-                    .collect();
-
-                let mac_tags: Vec<u32> = mac_tags
-                    .iter()
-                    .map(|b| {
-                        let t = u32::from_be_bytes(b.as_slice().try_into().unwrap());
-                        t
-                    })
-                    .collect();
-
-                let _ = test_bit_quality(&ciphertexts, None, "odd_dist_cipher.json");
-                let _ = test_bit_quality(&mac_tags, None, "odd_dist_mac.json");
+                // binomial test only
+                let _ = test_bit_quality(
+                    &ciphertexts,
+                    TestType::Binomial {
+                        threshold: 0.0000001,
+                    },
+                    format!("{}_synthetic_binomial_test_cipher.json", ciphertexts.len()).as_str(),
+                );
+                let _ = test_bit_quality(
+                    &mac_tags,
+                    TestType::Binomial {
+                        threshold: 0.0000001,
+                    },
+                    format!("{}_synthetic_binomial_test_mac.json", mac_tags.len()).as_str(),
+                );
+                // odd count test only
+                let _ = test_bit_quality(
+                    &ciphertexts,
+                    TestType::OddCountOnly,
+                    format!("{}_synthetic_odd_test_cipher.json", ciphertexts.len()).as_str(),
+                );
+                let _ = test_bit_quality(
+                    &mac_tags,
+                    TestType::OddCountOnly,
+                    format!("{}_synthetic_odd_test_mac.json", mac_tags.len()).as_str(),
+                );
             }
             Err(e) => eprintln!("Error: {}", e),
         },
@@ -376,16 +390,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // min threshold 0.0000001
         DataSet::Real => match extract_mic_cipher("wss_messages.json") {
             Ok((ciphertexts, mac_tags)) => {
+                // binomial test only
                 let _ = test_bit_quality(
                     &ciphertexts,
-                    Some(0.0000001),
-                    "real_binomial_test_cipher.json",
+                    TestType::Binomial {
+                        threshold: 0.0000001,
+                    },
+                    format!("{}_real_binomial_test_ciphertexts.json", ciphertexts.len()).as_str(),
                 );
-                let _ = test_bit_quality(&mac_tags, Some(0.0000001), "real_binomial_test_mac.json");
+                let _ = test_bit_quality(
+                    &mac_tags,
+                    TestType::Binomial {
+                        threshold: 0.0000001,
+                    },
+                    format!("{}_real_binomial_test_mac.json", mac_tags.len()).as_str(),
+                );
+                // odd count test only
+                let _ = test_bit_quality(
+                    &ciphertexts,
+                    TestType::OddCountOnly,
+                    format!("{}_real_odd_test_ciphertexts.json", ciphertexts.len()).as_str(),
+                );
+                let _ = test_bit_quality(
+                    &mac_tags,
+                    TestType::OddCountOnly,
+                    format!("{}_real_odd_test_mac.json", mac_tags.len()).as_str(),
+                );
             }
             Err(e) => eprintln!("Error: {}", e),
         },
-    }
+    };
 
     Ok(())
 }
