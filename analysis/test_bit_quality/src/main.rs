@@ -213,8 +213,8 @@ fn test_bit_quality(
                 update_progress(i);
 
                 let mut odd_count: usize = 0;
-                for &mic in list_blocks {
-                    let and_result = i & mic;
+                for &b in list_blocks {
+                    let and_result = i & b;
                     let bit_count = and_result.count_ones();
                     let parity = bit_count & 1;
                     if parity == 1 {
@@ -245,8 +245,8 @@ fn test_bit_quality(
                 update_progress(i);
 
                 let mut odd_count: usize = 0;
-                for &mic in list_blocks {
-                    let and_result = i & mic;
+                for &b in list_blocks {
+                    let and_result = i & b;
                     let bit_count = and_result.count_ones();
                     let parity = bit_count & 1;
                     if parity == 1 {
