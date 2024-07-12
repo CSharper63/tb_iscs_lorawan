@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::u32;
 use std::{fs::File, io::Read};
 
@@ -182,11 +182,11 @@ fn test_bit_quality(
     // progression parameters
     let ratio = 1000;
     let chunk_size = iterations / ratio;
-    let counter = Arc::new(AtomicUsize::new(0));
+    let counter = AtomicUsize::new(0);
 
     let update_progress = |i: u32| {
         if i % chunk_size == 0 {
-            let progress = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            let progress = counter.fetch_add(1, Ordering::Relaxed) + 1;
             println!("Progress: {:.2}%", 100.0 * (progress as f64 / ratio as f64));
         }
     };
@@ -223,13 +223,12 @@ fn test_bit_quality(
                 }
                 // executing test
                 if odd_count < threshold_odd_count || odd_count > expected_even {
-                    issues[odd_count].fetch_add(1, Ordering::SeqCst);
+                    issues[odd_count].fetch_add(1, Ordering::Relaxed);
                 }
             });
 
             // export while test is finished:
-            let issue_json = json!({ "invalid_odd":  issues});
-            write_json(export_name, &json!({ "invalid": issue_json}))?;
+            write_json(export_name, &json!({ "invalid_odd": issues}))?;
         }
         // this branch will count all 1-bit odd of the AND(4-byte_bloc, f_function) f_function in 0-2**32
         TestType::OddCountOnly => {
@@ -255,16 +254,11 @@ fn test_bit_quality(
                     }
                 }
 
-                odd_counters[odd_count].fetch_add(1, Ordering::SeqCst);
+                odd_counters[odd_count].fetch_add(1, Ordering::Relaxed);
             });
 
-            // export atomic counters to usize vector
-            let counters: Vec<usize> = odd_counters
-                .iter()
-                .map(|counter| counter.load(Ordering::SeqCst))
-                .collect();
             // export json
-            write_json(export_name, &json!({ "counters": counters}))?;
+            write_json(export_name, &json!({ "counters": odd_counters}))?;
             println!("Count result exported in {:?}", export_name);
         }
     }
