@@ -327,7 +327,7 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
 #[derive(Serialize, Debug, Deserialize)]
 struct PacketNonceReuse {
     nonce: u32,
-    ciphertexts: Vec<String>,
+    ciphertexts: HashSet<String>,
 }
 
 fn spot_nonce_reuse(
@@ -337,8 +337,7 @@ fn spot_nonce_reuse(
     File::open(path)?.read_to_end(&mut bytes)?;
 
     let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes)?;
-    let mut results: BTreeMap<u32, HashMap<u32, Vec<String>>> = BTreeMap::new();
-
+    let mut results: BTreeMap<u32, HashMap<u32, PacketNonceReuse>> = BTreeMap::new();
     for packet in packets {
         if let (Some(frm_payload), Some(dev_addr), Some(nonce)) = (
             packet.content.get("FRMPayload").and_then(Value::as_str),
@@ -353,25 +352,27 @@ fn spot_nonce_reuse(
                 .entry(dev_addr)
                 .or_insert_with(HashMap::new)
                 .entry(nonce)
-                .or_insert_with(Vec::new)
-                .push(payload);
+                .or_insert_with(|| PacketNonceReuse {
+                    nonce,
+                    ciphertexts: HashSet::new(),
+                })
+                .ciphertexts
+                .insert(payload);
         }
     }
-    // keep only unique occurence for a selected reused nonce
+
     let final_results: BTreeMap<u32, Vec<PacketNonceReuse>> = results
         .into_iter()
         .filter_map(|(dev_addr, nonce_map)| {
             let packet_nonce_reuses: Vec<PacketNonceReuse> = nonce_map
                 .into_iter()
-                .map(|(nonce, ciphertexts)| PacketNonceReuse {
-                    nonce,
-                    ciphertexts: ciphertexts
-                        .into_iter()
-                        .collect::<HashSet<_>>()
-                        .into_iter()
-                        .collect(),
-                }) // remove if no nonce reuse
-                .filter(|reuse| reuse.ciphertexts.len() > 1)
+                .filter_map(|(_, reuse)| {
+                    if reuse.ciphertexts.len() > 1 {
+                        Some(reuse)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
             if packet_nonce_reuses.is_empty() {
