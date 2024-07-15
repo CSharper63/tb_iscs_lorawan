@@ -337,83 +337,54 @@ fn spot_nonce_reuse(
     File::open(path)?.read_to_end(&mut bytes)?;
 
     let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes)?;
-
-    let mut packet_map: HashMap<u32, HashMap<u32, Vec<String>>> = HashMap::new();
-    let mut results: HashMap<u32, Vec<PacketNonceReuse>> = HashMap::new();
+    let mut results: BTreeMap<u32, HashMap<u32, Vec<String>>> = BTreeMap::new();
 
     for packet in packets {
-        // get ciphertext
-        let Some(frm_payload) = packet.content.get("FRMPayload") else {
-            continue;
-        };
-        let Some(payload) = frm_payload.as_str() else {
-            continue;
-        };
-        if payload.is_empty() {
-            continue;
-        }
-        let payload = payload.to_string();
-        // get dev addrr
-        let Some(dev_addr_val) = packet.content.get("DevAddr") else {
-            continue;
-        };
-        let Some(dev_addr) = dev_addr_val.as_u64() else {
-            continue;
-        };
-        let dev_addr = dev_addr as u32;
-        // get nonce
-        let Some(nonce_val) = packet.content.get("FCnt") else {
-            continue;
-        };
-        let Some(nonce) = nonce_val.as_u64() else {
-            continue;
-        };
-        let nonce = nonce as u32;
+        if let (Some(frm_payload), Some(dev_addr), Some(nonce)) = (
+            packet.content.get("FRMPayload").and_then(Value::as_str),
+            packet.content.get("DevAddr").and_then(Value::as_u64),
+            packet.content.get("FCnt").and_then(Value::as_u64),
+        ) {
+            let dev_addr = dev_addr as u32;
+            let nonce = nonce as u32;
+            let payload = frm_payload.to_string();
 
-        let entry = packet_map
-            .entry(dev_addr)
-            .or_insert_with(HashMap::new)
-            .entry(nonce)
-            .or_insert_with(Vec::new);
-
-        let mut reused_nonce = false;
-        for existing_payload in entry.iter() {
-            if existing_payload != &payload {
-                reused_nonce = true;
-                results
-                    .entry(dev_addr)
-                    .or_insert_with(Vec::new)
-                    .push(PacketNonceReuse {
-                        nonce,
-                        ciphertexts: vec![existing_payload.clone(), payload.clone()],
-                    });
-            }
-        }
-
-        if reused_nonce {
             results
                 .entry(dev_addr)
+                .or_insert_with(HashMap::new)
+                .entry(nonce)
                 .or_insert_with(Vec::new)
-                .push(PacketNonceReuse {
-                    nonce,
-                    ciphertexts: entry.clone(),
-                });
+                .push(payload);
         }
-
-        entry.push(payload);
     }
+    // keep only unique occurence for a selected reused nonce
+    let final_results: BTreeMap<u32, Vec<PacketNonceReuse>> = results
+        .into_iter()
+        .filter_map(|(dev_addr, nonce_map)| {
+            let packet_nonce_reuses: Vec<PacketNonceReuse> = nonce_map
+                .into_iter()
+                .map(|(nonce, ciphertexts)| PacketNonceReuse {
+                    nonce,
+                    ciphertexts: ciphertexts
+                        .into_iter()
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect(),
+                }) // remove if no nonce reuse
+                .filter(|reuse| reuse.ciphertexts.len() > 1)
+                .collect();
 
-    // sort and remove dublicate
-    for (_, packet_nonce_reuses) in results.iter_mut() {
-        packet_nonce_reuses.sort_by_key(|p| p.nonce);
-        packet_nonce_reuses.dedup_by_key(|p| p.nonce);
-    }
+            if packet_nonce_reuses.is_empty() {
+                None
+            } else {
+                Some((dev_addr, packet_nonce_reuses))
+            }
+        })
+        .collect();
 
-    let sorted_results: BTreeMap<u32, Vec<PacketNonceReuse>> = results.into_iter().collect();
+    write_json("nonce_reuse.json", &json!({ "reuse":final_results }))?;
 
-    write_json("nonce_reuse.json", &json!({ "nonce_reuse":sorted_results }))?;
-
-    Ok(sorted_results)
+    Ok(final_results)
 }
 
 enum DataSet {
@@ -495,7 +466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match spot_nonce_reuse("wss_messages.json") {
         Ok(results) => {
-            for (dev_addr, reuse_list) in results {
+            /* for (dev_addr, reuse_list) in results {
                 println!("DevAddr: {}", dev_addr);
                 for reuse in reuse_list {
                     println!("   {}", reuse.nonce);
@@ -503,7 +474,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("     {}", cipher);
                     }
                 }
-            }
+            } */
+            print!("{:?}", results.len());
         }
         Err(e) => eprintln!("Error: {:?}", e),
     }
