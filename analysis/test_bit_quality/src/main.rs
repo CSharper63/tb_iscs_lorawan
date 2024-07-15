@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::u32;
@@ -28,7 +29,7 @@ struct Issue {
     even_count: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LoRaWanPacket {
     content: Value,
 }
@@ -323,12 +324,68 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
     Ok((packet_mic, packet_ciphertexts))
 }
 
+fn find_duplicated(
+    path: &str,
+) -> Result<(Vec<(String, u32, u32)>, HashSet<(String, u32, u32)>), Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+    let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes).unwrap();
+
+    let mut filtered_packets: Vec<(String, u32, u32)> = Vec::new();
+    let mut unique: HashSet<(String, u32, u32)> = HashSet::new();
+
+    for packet in packets {
+        // get only packet with FRMPayload
+
+        let Some(frm_payload) = packet.content.get("FRMPayload") else {
+            continue;
+        };
+
+        // get only packet with content in payload
+        let Some(payload) = frm_payload.as_str() else {
+            continue;
+        };
+
+        if payload.is_empty() {
+            continue;
+        }
+
+        // get only if mic exists
+        let Some(_) = packet.content.get("MIC") else {
+            continue;
+        };
+
+        let Some(dev_addr) = packet.content.get("DevAddr") else {
+            continue;
+        };
+
+        let Some(dev_addr) = dev_addr.as_u64() else {
+            continue;
+        };
+        let dev_addr = dev_addr as u32;
+
+        //print!("payload: {:?}", payload);
+
+        // get only if nonce exist
+        let Some(nonce) = packet.content.get("FCnt") else {
+            continue;
+        };
+
+        let nonce = nonce.as_u64().unwrap() as u32;
+
+        filtered_packets.push((payload.to_string(), nonce, dev_addr));
+        unique.insert((payload.to_string(), nonce, dev_addr));
+    }
+
+    Ok((filtered_packets, unique))
+}
+
 enum DataSet {
     Synthetic,
     Real,
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let selected_dataset = DataSet::Real;
+    /* let selected_dataset = DataSet::Real;
     match selected_dataset {
         DataSet::Synthetic => match generate_sample_data(30000) {
             Ok((ciphertexts, mac_tags)) => {
@@ -398,7 +455,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => eprintln!("Error: {}", e),
         },
-    };
+    }; */
+
+    match find_duplicated("wss_messages.json") {
+        Ok((filter_packets, unique)) => {
+            for (ct, nonce, dev_addr) in &unique {
+                // the goal is to find nonce reuse, so must filter by dev addr and then identify if nonce has been repeatec
+
+                let duplicated: Vec<(String, u32, u32)> = filter_packets
+                    .iter()
+                    .filter(|&(_, n, d)| *n == *nonce && *d == *dev_addr)
+                    .map(|(c, n, d)| (c.clone(), *n, *d))
+                    .collect();
+
+                if duplicated.len() == 0 {
+                    continue;
+                }
+
+                // not very efficient
+                for (c, n, dev_addr) in duplicated {
+                    if *ct != c && *nonce == n {
+                        println!("{:?},{:?},{:?}", dev_addr, c, n);
+                    }
+                }
+            }
+
+            println!("with duplicated: {:?}", filter_packets.len());
+            println!("without duplicated: {:?}", unique.len());
+        }
+        Err(e) => eprintln!("{:?}", e),
+    }
 
     Ok(())
 }
