@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::u32;
@@ -324,60 +324,96 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
     Ok((packet_mic, packet_ciphertexts))
 }
 
-fn find_duplicated(
-    path: &str,
-) -> Result<(Vec<(String, u32, u32)>, HashSet<(String, u32, u32)>), Box<dyn std::error::Error>> {
-    let mut bytes = Vec::new();
-    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
-    let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes).unwrap();
+#[derive(Serialize, Debug, Deserialize)]
+struct PacketNonceReuse {
+    nonce: u32,
+    ciphertexts: Vec<String>,
+}
 
-    let mut filtered_packets: Vec<(String, u32, u32)> = Vec::new();
-    let mut unique: HashSet<(String, u32, u32)> = HashSet::new();
+fn spot_nonce_reuse(
+    path: &str,
+) -> Result<BTreeMap<u32, Vec<PacketNonceReuse>>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(path)?.read_to_end(&mut bytes)?;
+
+    let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes)?;
+
+    let mut packet_map: HashMap<u32, HashMap<u32, Vec<String>>> = HashMap::new();
+    let mut results: HashMap<u32, Vec<PacketNonceReuse>> = HashMap::new();
 
     for packet in packets {
-        // get only packet with FRMPayload
-
+        // get ciphertext
         let Some(frm_payload) = packet.content.get("FRMPayload") else {
             continue;
         };
-
-        // get only packet with content in payload
         let Some(payload) = frm_payload.as_str() else {
             continue;
         };
-
         if payload.is_empty() {
             continue;
         }
-
-        // get only if mic exists
-        let Some(_) = packet.content.get("MIC") else {
+        let payload = payload.to_string();
+        // get dev addrr
+        let Some(dev_addr_val) = packet.content.get("DevAddr") else {
             continue;
         };
-
-        let Some(dev_addr) = packet.content.get("DevAddr") else {
-            continue;
-        };
-
-        let Some(dev_addr) = dev_addr.as_u64() else {
+        let Some(dev_addr) = dev_addr_val.as_u64() else {
             continue;
         };
         let dev_addr = dev_addr as u32;
-
-        //print!("payload: {:?}", payload);
-
-        // get only if nonce exist
-        let Some(nonce) = packet.content.get("FCnt") else {
+        // get nonce
+        let Some(nonce_val) = packet.content.get("FCnt") else {
             continue;
         };
+        let Some(nonce) = nonce_val.as_u64() else {
+            continue;
+        };
+        let nonce = nonce as u32;
 
-        let nonce = nonce.as_u64().unwrap() as u32;
+        let entry = packet_map
+            .entry(dev_addr)
+            .or_insert_with(HashMap::new)
+            .entry(nonce)
+            .or_insert_with(Vec::new);
 
-        filtered_packets.push((payload.to_string(), nonce, dev_addr));
-        unique.insert((payload.to_string(), nonce, dev_addr));
+        let mut reused_nonce = false;
+        for existing_payload in entry.iter() {
+            if existing_payload != &payload {
+                reused_nonce = true;
+                results
+                    .entry(dev_addr)
+                    .or_insert_with(Vec::new)
+                    .push(PacketNonceReuse {
+                        nonce,
+                        ciphertexts: vec![existing_payload.clone(), payload.clone()],
+                    });
+            }
+        }
+
+        if reused_nonce {
+            results
+                .entry(dev_addr)
+                .or_insert_with(Vec::new)
+                .push(PacketNonceReuse {
+                    nonce,
+                    ciphertexts: entry.clone(),
+                });
+        }
+
+        entry.push(payload);
     }
 
-    Ok((filtered_packets, unique))
+    // sort and remove dublicate
+    for (_, packet_nonce_reuses) in results.iter_mut() {
+        packet_nonce_reuses.sort_by_key(|p| p.nonce);
+        packet_nonce_reuses.dedup_by_key(|p| p.nonce);
+    }
+
+    let sorted_results: BTreeMap<u32, Vec<PacketNonceReuse>> = results.into_iter().collect();
+
+    write_json("nonce_reuse.json", &json!({ "nonce_reuse":sorted_results }))?;
+
+    Ok(sorted_results)
 }
 
 enum DataSet {
@@ -457,33 +493,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     }; */
 
-    match find_duplicated("wss_messages.json") {
-        Ok((filter_packets, unique)) => {
-            for (ct, nonce, dev_addr) in &unique {
-                // the goal is to find nonce reuse, so must filter by dev addr and then identify if nonce has been repeatec
-
-                let duplicated: Vec<(String, u32, u32)> = filter_packets
-                    .iter()
-                    .filter(|&(_, n, d)| *n == *nonce && *d == *dev_addr)
-                    .map(|(c, n, d)| (c.clone(), *n, *d))
-                    .collect();
-
-                if duplicated.len() == 0 {
-                    continue;
-                }
-
-                // not very efficient
-                for (c, n, dev_addr) in duplicated {
-                    if *ct != c && *nonce == n {
-                        println!("{:?},{:?},{:?}", dev_addr, c, n);
+    match spot_nonce_reuse("wss_messages.json") {
+        Ok(results) => {
+            for (dev_addr, reuse_list) in results {
+                println!("DevAddr: {}", dev_addr);
+                for reuse in reuse_list {
+                    println!("   {}", reuse.nonce);
+                    for cipher in reuse.ciphertexts {
+                        println!("     {}", cipher);
                     }
                 }
             }
-
-            println!("with duplicated: {:?}", filter_packets.len());
-            println!("without duplicated: {:?}", unique.len());
         }
-        Err(e) => eprintln!("{:?}", e),
+        Err(e) => eprintln!("Error: {:?}", e),
     }
 
     Ok(())
