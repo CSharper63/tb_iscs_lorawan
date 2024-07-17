@@ -339,26 +339,28 @@ fn spot_nonce_reuse(
     let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes)?;
     let mut results: BTreeMap<u32, HashMap<u32, PacketNonceReuse>> = BTreeMap::new();
     for packet in packets {
-        if let (Some(frm_payload), Some(dev_addr), Some(nonce)) = (
+        let (Some(frm_payload), Some(dev_addr), Some(nonce)) = (
             packet.content.get("FRMPayload").and_then(Value::as_str),
             packet.content.get("DevAddr").and_then(Value::as_u64),
             packet.content.get("FCnt").and_then(Value::as_u64),
-        ) {
-            let dev_addr = dev_addr as u32;
-            let nonce = nonce as u32;
-            let payload = frm_payload.to_string();
+        ) else {
+            continue;
+        };
 
-            results
-                .entry(dev_addr)
-                .or_insert_with(HashMap::new)
-                .entry(nonce)
-                .or_insert_with(|| PacketNonceReuse {
-                    nonce,
-                    ciphertexts: HashSet::new(),
-                })
-                .ciphertexts
-                .insert(payload);
-        }
+        let dev_addr = dev_addr as u32;
+        let nonce = nonce as u32;
+        let payload = frm_payload.to_string();
+
+        results
+            .entry(dev_addr)
+            .or_insert_with(HashMap::new)
+            .entry(nonce)
+            .or_insert_with(|| PacketNonceReuse {
+                nonce,
+                ciphertexts: HashSet::new(),
+            })
+            .ciphertexts
+            .insert(payload);
     }
 
     let final_results: BTreeMap<u32, Vec<PacketNonceReuse>> = results
