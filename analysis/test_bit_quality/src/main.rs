@@ -467,7 +467,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     }; */
 
-    match spot_nonce_reuse("wss_messages.json") {
+    /*  match spot_nonce_reuse("wss_messages.json") {
         Ok(results) => {
             /* for (dev_addr, reuse_list) in results {
                 println!("DevAddr: {}", dev_addr);
@@ -478,9 +478,85 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } */
-            print!("{:?}", results.len());
+            println!("{:?}", results.len());
         }
         Err(e) => eprintln!("Error: {:?}", e),
+    } */
+
+    // try to xor ciphertext with the same nonce:
+    // example from real data collection
+    // cannot say if the same key has encrypt these ciphertexts
+    let ciphertexts = vec![
+        "9719797EA61E122A34D83432DFC6153A3996",
+        "3282A78D0D1F38C65B5FFE9EFD77E660BDEB",
+        "922AF82253085C0B1F7D8AB6332E579CA0D1",
+        "27598283259E35DEEABE3878BCFF20468F60",
+        "EA6F43D1B89307F00737A2144C4956558048",
+        "6E3B457C670831DAEC52B7144B891FF18184",
+        "A698A9FC853E59A5B75A961A679F0CAA8D78",
+        "2105EF896C3283843E46B332BE1A0C24F52B",
+        "E39F98615F7F41A935E18AE7C215B8DC8DF5",
+        "5E880523D4776D0E71023DBD7DADED355A7C",
+        "E3F6FD9F49FBEB58482309F72F047C368223",
+        "823577D68A6B2E32F335DAA47BF2C4561B50",
+        "6734C8B3383010CA61D7F503BEC52A18BE30",
+        "3C98701277C634F0E0F51831FF8598278A5C",
+    ];
+
+    let upper_bound = 8;
+    let mut next_c = 0;
+
+    let loop_upper_bound = ciphertexts.len();
+
+    let mut i = 0;
+
+    // use to keep only unique as iterate over all ciphertexts for each ciphertext will create some duplicated + c x0r c = 0
+    let mut xor_res = HashSet::new();
+
+    // xor every ciphertext with each other one by one. a xor b only kept. a xor a and b xor a removed.
+    while i < loop_upper_bound {
+        // change the ciphertext ref to xor with others
+        if i == loop_upper_bound - 1 {
+            if next_c == loop_upper_bound - 1 {
+                break;
+            }
+
+            next_c += 1;
+            i = 0;
+            println!("- {}", next_c);
+        }
+
+        let c_ref = match usize::from_str_radix(&ciphertexts[next_c][0..upper_bound], 16) {
+            Ok(c1) => c1,
+            Err(e) => {
+                eprintln!("{}", e);
+                return Err(Box::new(e));
+            }
+        };
+
+        let c = match usize::from_str_radix(&ciphertexts[i][0..upper_bound], 16) {
+            Ok(c0) => c0,
+            Err(e) => {
+                eprintln!("{}", e);
+                return Err(Box::new(e));
+            }
+        };
+        let res = c_ref ^ c;
+        i += 1;
+        // eliminate a xor a
+        if res == 0 {
+            continue;
+        }
+        // keep only unique result
+        xor_res.insert(format!("{:X?}", res));
+    }
+    // convert hashset to vec to sort result and spot similitude
+    let mut xor_res: Vec<_> = xor_res.into_iter().collect();
+
+    xor_res.sort();
+
+    for e in xor_res {
+        println!("{}", e);
     }
 
     Ok(())
