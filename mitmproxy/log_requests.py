@@ -11,7 +11,8 @@ class Test(Enum):
     # https://doc.sm.tc/station/tcproto.html#remote-commands
     injectRCE= 'injectRCE'
     injectRceCUPS='injectRceCUPS'
-
+    removeFRMPayload = 'Remove FRMPayload'
+    removeMIC = 'Remove MIC'
 
 class LNSInterceptor:
     root = '/home/mitmproxy'
@@ -158,7 +159,7 @@ class TestSamples:
         # the dev address from our device
         self.own_dev_address = 00000
         # the selected test to run
-        self.selected_test = Test.injectRceCUPS
+        self.selected_test = Test.removeMIC
         # index used to move through the rce commands array
         self.rce_index = 0
         # commands to test for the Test.injectRCE
@@ -177,7 +178,9 @@ class TestSamples:
             Test.spoofRssi: self.spoof_rssi,
             Test.spoofDevEUI: self.spoof_dev_eui,
             Test.spoofDevAddr: self.spoof_dev_addr,
-            Test.injectRCE: self.inject_rce
+            Test.injectRCE: self.inject_rce,
+            Test.removeFRMPayload: self.remove_frmpayload,
+            Test.removeMIC: self.remove_mic
         }
 
     def timestamp_now(self):
@@ -323,8 +326,6 @@ class TestSamples:
         except Exception as e:
             ctx.log.info(f"[{timestamp}] Error processing HTTP response: {e}")
 
-
-
     def spoof_rssi(self, flow: http.HTTPFlow):
 
         timestamp = self.timestamp_now()
@@ -358,8 +359,6 @@ class TestSamples:
             except Exception as e:
                 ctx.log.error(f"An error occurred in {self.selected_test.value} test: {str(e)}")
 
-            # todo: test seems not working as expected -> check if need to recompute some field or hash/crc
-
     def spoof_dev_eui(self, flow: http.HTTPFlow):
         ctx.log.info(f"Executing {self.selected_test.value} test")
         # intercept /router-info and replace the gateway config by a new one
@@ -373,10 +372,66 @@ class TestSamples:
                 gateway_config = json.dumps(other_gateway_eui).encode('utf-8')
                 ctx.master.commands.call("inject.websocket", flow, message.from_client, gateway_config)
                 ctx.log.info(f"New config injected {other_gateway_eui}")
+    
+    def remove_frmpayload(self, flow: http.HTTPFlow):
+        timestamp = self.timestamp_now()
+        message = flow.websocket.messages[-1]
 
-    def spoof_dev_addr(self, flow: http.HTTPFlow):
-        ctx.log.info(f"Executing {self.selected_test.value} test")
-        # todo
+        ctx.log.info(f"[{timestamp}] Executing: {self.selected_test.value} test")
+
+        try:
+            content = json.loads(message.content)
+        except json.JSONDecodeError:
+            content = message.content.decode('utf-8', 'replace')
+
+        is_uplink = content["msgtype"] == "updf"
+        if is_uplink and message.from_client and flow.websocket is not None:
+            try:
+                
+                ctx.log.info(f"[{timestamp}] Dropping current message...")
+                message.drop()
+
+                # erase content
+                payload = content['FRMPayload']
+                content['FRMPayload'] = ''
+                ctx.log.info(f"FRMPayload erased, real value: {payload}")
+
+                # encode the json
+                new_content = json.dumps(content).encode('utf-8')
+                #inject the content in the message
+                ctx.master.commands.call("inject.websocket", flow, message.from_client,new_content)
+            except Exception as e:
+                ctx.log.error(f"An error occurred in {self.selected_test.value} test: {str(e)}")
+
+    def remove_mic(self, flow: http.HTTPFlow):
+        timestamp = self.timestamp_now()
+        message = flow.websocket.messages[-1]
+
+        ctx.log.info(f"[{timestamp}] Executing: {self.selected_test.value} test")
+
+        try:
+            content = json.loads(message.content)
+        except json.JSONDecodeError:
+            content = message.content.decode('utf-8', 'replace')
+
+        is_uplink = content["msgtype"] == "updf"
+        if is_uplink and message.from_client and flow.websocket is not None:
+            try:
+                
+                ctx.log.info(f"[{timestamp}] Dropping current message...")
+                message.drop()
+
+                # erase content
+                payload = content['MIC']
+                content['MIC'] = 0
+                ctx.log.info(f"MIC erased, real value: {payload}")
+
+                # encode the json
+                new_content = json.dumps(content).encode('utf-8')
+                #inject the content in the message
+                ctx.master.commands.call("inject.websocket", flow, message.from_client,new_content)
+            except Exception as e:
+                ctx.log.error(f"An error occurred in {self.selected_test.value} test: {str(e)}")
 
     def inject_rce(self, flow: http.HTTPFlow):
         timestamp = self.timestamp_now()
@@ -394,7 +449,6 @@ class TestSamples:
                 self.rce_index = 0
 
             message.content = command_bytes
-
 
 # add the current logger as new addon on mitmproxy
 # by default test sample is not enabled
