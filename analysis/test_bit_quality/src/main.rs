@@ -390,126 +390,23 @@ fn spot_nonce_reuse(
     Ok(final_results)
 }
 
-enum DataSet {
-    Synthetic,
-    Real,
-}
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /* let selected_dataset = DataSet::Real;
-    match selected_dataset {
-        DataSet::Synthetic => match generate_sample_data(30000) {
-            Ok((ciphertexts, mac_tags)) => {
-                // binomial test only
-                let _ = test_bit_quality(
-                    &ciphertexts,
-                    TestType::Binomial {
-                        threshold: 0.0000001,
-                    },
-                    format!(
-                        "{}_synthetic_binomial_test_ciphertexts.json",
-                        ciphertexts.len()
-                    )
-                    .as_str(),
-                );
-                let _ = test_bit_quality(
-                    &mac_tags,
-                    TestType::Binomial {
-                        threshold: 0.0000001,
-                    },
-                    format!("{}_synthetic_binomial_test_mac.json", mac_tags.len()).as_str(),
-                );
-                // odd count test only
-                let _ = test_bit_quality(
-                    &ciphertexts,
-                    TestType::OddCountOnly,
-                    format!("{}_synthetic_odd_test_ciphertexts.json", ciphertexts.len()).as_str(),
-                );
-                let _ = test_bit_quality(
-                    &mac_tags,
-                    TestType::OddCountOnly,
-                    format!("{}_synthetic_odd_test_mac.json", mac_tags.len()).as_str(),
-                );
-            }
-            Err(e) => eprintln!("Error: {}", e),
-        },
-        // tested on commit: 3a78ecf0e98642999d25865305c28a348804e3d6
-        // min threshold 0.0000001
-        DataSet::Real => match extract_mic_cipher("wss_messages.json") {
-            Ok((ciphertexts, mac_tags)) => {
-                // binomial test only
-                let _ = test_bit_quality(
-                    &ciphertexts,
-                    TestType::Binomial {
-                        threshold: 0.0000001,
-                    },
-                    format!("{}_real_binomial_test_ciphertexts.json", ciphertexts.len()).as_str(),
-                );
-                let _ = test_bit_quality(
-                    &mac_tags,
-                    TestType::Binomial {
-                        threshold: 0.0000001,
-                    },
-                    format!("{}_real_binomial_test_mac.json", mac_tags.len()).as_str(),
-                );
-                // odd count test only
-                let _ = test_bit_quality(
-                    &ciphertexts,
-                    TestType::OddCountOnly,
-                    format!("{}_real_odd_test_ciphertexts.json", ciphertexts.len()).as_str(),
-                );
-                let _ = test_bit_quality(
-                    &mac_tags,
-                    TestType::OddCountOnly,
-                    format!("{}_real_odd_test_mac.json", mac_tags.len()).as_str(),
-                );
-            }
-            Err(e) => eprintln!("Error: {}", e),
-        },
-    }; */
+fn xor_same_iv_ciphertexts(
+    ciphertexts: Vec<&str>,
+    outpout_len: usize,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if ciphertexts.is_empty() {
+        return Err("Please provide a non empty ciphertexts list".into());
+    }
 
-    /* match spot_nonce_reuse("wss_messages.json") {
-        Ok(results) => {
-            /* for (dev_addr, reuse_list) in results {
-                println!("DevAddr: {}", dev_addr);
-                for reuse in reuse_list {
-                    println!("   {}", reuse.nonce);
-                    for cipher in reuse.ciphertexts {
-                        println!("     {}", cipher);
-                    }
-                }
-            } */
-            println!("{:?}", results.len());
-        }
-        Err(e) => eprintln!("Error: {:?}", e),
-    } */
+    if outpout_len <= 0 {
+        return Err("Please provide an output xor result size".into());
+    }
 
-    // try to xor ciphertext with the same nonce:
-    // example from real data collection
-    // cannot say if the same key has encrypt these ciphertexts
+    let ciphertext_radix = 16; // ciphertext base representation in string vector
 
-    let ciphertexts = vec![
-        "0645E9258D92D8349F3804AD3E80E455874E",
-        "B9DF3EA3C85F2E775CED59AC11FEFC837EF1",
-        "140589A764CDA81FC6AB963F13A5A5504FD4",
-        "51C9DB4AEE943688E253420748072042B06F",
-        "9500D15E68B76F7CEE392C82792E4A8F3DB4",
-        "1B8B611912BFDA47F709340E15B4C48B8570",
-        "9EF5386D1F8D721850634AC70E3C4E1CA78F",
-        "8D99A63622130F550DB93E8D0EA94C837DE7",
-        "8B85FE51FACB4591EFA3D851CD76FC4B2591",
-        "1BDD2DD51D029A7BD1FA036B162FFC5B15BA",
-        "EDBDA13B77D3024D030D6B55FBB7CA29CCBD",
-        "C2717FAE8A7114BDB45045F7AC15D1489EFE",
-        "B9D1AD207882CF5EE7939D0E6887061E8AE1",
-        "58517EAAE6761BB586D07637D9A0A7BEC4CA",
-        "C7AE80244DB21250FA8054D4F9BAAF45451D",
-        "460FA4FE3B64CF98976B49E6CB89E0DD1070",
-    ];
+    let mut next_c = 0; //iterator
 
-    let upper_bound = 8;
-    let mut next_c = 0;
-
-    let loop_upper_bound = ciphertexts.len();
+    let loop_upper_bound = ciphertexts.len(); // max possible iteration
 
     let mut i = 0;
 
@@ -529,15 +426,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("- {}", next_c);
         }
 
-        let c_ref = match usize::from_str_radix(&ciphertexts[next_c][0..upper_bound], 16) {
-            Ok(c1) => c1,
-            Err(e) => {
-                eprintln!("{}", e);
-                return Err(Box::new(e));
-            }
-        };
+        // convert the string hex representation to byte representation
+        let c_ref =
+            match usize::from_str_radix(&ciphertexts[next_c][0..outpout_len], ciphertext_radix) {
+                Ok(c1) => c1,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return Err(Box::new(e));
+                }
+            };
 
-        let c = match usize::from_str_radix(&ciphertexts[i][0..upper_bound], 16) {
+        // convert the string hex representation to byte representation
+        let c = match usize::from_str_radix(&ciphertexts[i][0..outpout_len], ciphertext_radix) {
             Ok(c0) => c0,
             Err(e) => {
                 eprintln!("{}", e);
@@ -554,12 +454,158 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         xor_res.insert(format!("{:X?}", res));
     }
     // convert hashset to vec to sort result and spot similitude
-    let mut xor_res: Vec<_> = xor_res.into_iter().collect();
+    let mut xor_res: Vec<String> = xor_res.into_iter().collect();
 
     xor_res.sort();
 
-    for e in xor_res {
-        println!("{}", e);
+    Ok(xor_res)
+}
+
+enum DataSet {
+    Synthetic,
+    Real,
+}
+
+// this enum contains all program type to run:
+// NonceReuseSpotting: this program take a wss_message.json and extract all ciphertext encrypted with the same IV
+// SameNonceCtXORing: this program take a vec<string> of a string ciphertext in hex -> "ABCDEF"
+// StatisticalTest: compute binomial or odd count test over all MIC/FRMPayload extracted from wss_message.json
+enum RunType {
+    NonceReuseSpotting,
+    SameNonceCtXORing,
+    StatisticalTest,
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let program_to_run = RunType::SameNonceCtXORing;
+
+    match program_to_run {
+        RunType::StatisticalTest => {
+            let selected_dataset = DataSet::Real;
+            match selected_dataset {
+                DataSet::Synthetic => match generate_sample_data(30000) {
+                    Ok((ciphertexts, mac_tags)) => {
+                        // binomial test only
+                        let _ = test_bit_quality(
+                            &ciphertexts,
+                            TestType::Binomial {
+                                threshold: 0.0000001,
+                            },
+                            format!(
+                                "{}_synthetic_binomial_test_ciphertexts.json",
+                                ciphertexts.len()
+                            )
+                            .as_str(),
+                        );
+                        let _ = test_bit_quality(
+                            &mac_tags,
+                            TestType::Binomial {
+                                threshold: 0.0000001,
+                            },
+                            format!("{}_synthetic_binomial_test_mac.json", mac_tags.len()).as_str(),
+                        );
+                        // odd count test only
+                        let _ = test_bit_quality(
+                            &ciphertexts,
+                            TestType::OddCountOnly,
+                            format!("{}_synthetic_odd_test_ciphertexts.json", ciphertexts.len())
+                                .as_str(),
+                        );
+                        let _ = test_bit_quality(
+                            &mac_tags,
+                            TestType::OddCountOnly,
+                            format!("{}_synthetic_odd_test_mac.json", mac_tags.len()).as_str(),
+                        );
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                },
+                // tested on commit: 3a78ecf0e98642999d25865305c28a348804e3d6
+                // min threshold 0.0000001
+                DataSet::Real => match extract_mic_cipher("wss_messages.json") {
+                    Ok((ciphertexts, mac_tags)) => {
+                        // binomial test only
+                        let _ = test_bit_quality(
+                            &ciphertexts,
+                            TestType::Binomial {
+                                threshold: 0.0000001,
+                            },
+                            format!("{}_real_binomial_test_ciphertexts.json", ciphertexts.len())
+                                .as_str(),
+                        );
+                        let _ = test_bit_quality(
+                            &mac_tags,
+                            TestType::Binomial {
+                                threshold: 0.0000001,
+                            },
+                            format!("{}_real_binomial_test_mac.json", mac_tags.len()).as_str(),
+                        );
+                        // odd count test only
+                        let _ = test_bit_quality(
+                            &ciphertexts,
+                            TestType::OddCountOnly,
+                            format!("{}_real_odd_test_ciphertexts.json", ciphertexts.len())
+                                .as_str(),
+                        );
+                        let _ = test_bit_quality(
+                            &mac_tags,
+                            TestType::OddCountOnly,
+                            format!("{}_real_odd_test_mac.json", mac_tags.len()).as_str(),
+                        );
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                },
+            };
+        }
+        RunType::NonceReuseSpotting => {
+            match spot_nonce_reuse("wss_messages.json") {
+                Ok(results) => {
+                    /* for (dev_addr, reuse_list) in results {
+                        println!("DevAddr: {}", dev_addr);
+                        for reuse in reuse_list {
+                            println!("   {}", reuse.nonce);
+                            for cipher in reuse.ciphertexts {
+                                println!("     {}", cipher);
+                            }
+                        }
+                    } */
+                    println!("{:?}", results.len());
+                }
+                Err(e) => eprintln!("Error: {:?}", e),
+            }
+        }
+        RunType::SameNonceCtXORing => {
+            // try to xor ciphertext with the same nonce:
+            // example from real data collection
+            // cannot say if the same key has encrypt these ciphertexts
+
+            let ciphertexts = vec![
+                "0645E9258D92D8349F3804AD3E80E455874E",
+                "B9DF3EA3C85F2E775CED59AC11FEFC837EF1",
+                "140589A764CDA81FC6AB963F13A5A5504FD4",
+                "51C9DB4AEE943688E253420748072042B06F",
+                "9500D15E68B76F7CEE392C82792E4A8F3DB4",
+                "1B8B611912BFDA47F709340E15B4C48B8570",
+                "9EF5386D1F8D721850634AC70E3C4E1CA78F",
+                "8D99A63622130F550DB93E8D0EA94C837DE7",
+                "8B85FE51FACB4591EFA3D851CD76FC4B2591",
+                "1BDD2DD51D029A7BD1FA036B162FFC5B15BA",
+                "EDBDA13B77D3024D030D6B55FBB7CA29CCBD",
+                "C2717FAE8A7114BDB45045F7AC15D1489EFE",
+                "B9D1AD207882CF5EE7939D0E6887061E8AE1",
+                "58517EAAE6761BB586D07637D9A0A7BEC4CA",
+                "C7AE80244DB21250FA8054D4F9BAAF45451D",
+                "460FA4FE3B64CF98976B49E6CB89E0DD1070",
+            ];
+
+            match xor_same_iv_ciphertexts(ciphertexts, 8) {
+                Ok(res) => {
+                    for e in &res {
+                        println!("{}", e);
+                    }
+                }
+                Err(e) => eprintln!("{:?}", e),
+            };
+        }
     }
 
     Ok(())
