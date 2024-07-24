@@ -600,7 +600,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             match xor_same_iv_ciphertexts(ciphertexts, 8) {
                 Ok(res) => {
                     for e in &res {
-                        println!("{}", e);
+                        let Ok(num) = u32::from_str_radix(e, 16) else {
+                            return Err("Unable to print ciphertext".into());
+                        };
+
+                        println!("{:08X?}", num);
                     }
                 }
                 Err(e) => eprintln!("{:?}", e),
