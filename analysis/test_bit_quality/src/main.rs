@@ -324,6 +324,26 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
     Ok((packet_mic, packet_ciphertexts))
 }
 
+fn count_dev_addresses(path: &str) -> Result<HashSet<u64>, Box<dyn std::error::Error>> {
+    let mut bytes = Vec::new();
+    File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+    let packets: Vec<LoRaWanPacket> = serde_json::from_slice(&bytes).unwrap();
+
+    let mut dev_addresses: HashSet<u64> = HashSet::new();
+
+    for packet in packets {
+        let Some(device_id) = packet.content.get("DevAddr") else {
+            continue;
+        };
+
+        let device_id = device_id.as_i64().unwrap() as u64;
+
+        dev_addresses.insert(device_id);
+    }
+
+    Ok(dev_addresses)
+}
+
 #[derive(Serialize, Debug, Deserialize)]
 struct PacketNonceReuse {
     nonce: u32,
@@ -474,10 +494,12 @@ enum RunType {
     NonceReuseSpotting,
     SameNonceCtXORing,
     StatisticalTest,
+    GlobalStat,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let program_to_run = RunType::SameNonceCtXORing;
+    let program_to_run = RunType::GlobalStat;
+    let file_path = "wss_messages.json";
 
     match program_to_run {
         RunType::StatisticalTest => {
@@ -521,7 +543,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 // tested on commit: 3a78ecf0e98642999d25865305c28a348804e3d6
                 // min threshold 0.0000001
-                DataSet::Real => match extract_mic_cipher("wss_messages.json") {
+                DataSet::Real => match extract_mic_cipher(file_path) {
                     Ok((ciphertexts, mac_tags)) => {
                         // binomial test only
                         let _ = test_bit_quality(
@@ -557,7 +579,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
         }
         RunType::NonceReuseSpotting => {
-            match spot_nonce_reuse("wss_messages.json") {
+            match spot_nonce_reuse(file_path) {
                 Ok(results) => {
                     /* for (dev_addr, reuse_list) in results {
                         println!("DevAddr: {}", dev_addr);
@@ -609,6 +631,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Err(e) => eprintln!("{:?}", e),
             };
+        }
+        RunType::GlobalStat => {
+            let device_ids = count_dev_addresses(file_path)?;
+            let (ciphertexts, _) = extract_mic_cipher(file_path)?;
+            let nonce_reuse = spot_nonce_reuse(file_path)?;
+
+            println!("total devices:             {:?}", device_ids.len());
+            println!("total ciphertexts:         {:?}", ciphertexts.len());
+            println!("total devices nonce reuse: {:?}", nonce_reuse.len());
         }
     }
 
