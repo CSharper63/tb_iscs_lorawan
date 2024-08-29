@@ -166,7 +166,7 @@ enum TestType {
 
 fn test_bit_quality(
     list_blocks: &Vec<u32>,
-    test_type: TestType,
+    test_type: &TestType,
     export_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start_time = Utc::now();
@@ -196,13 +196,13 @@ fn test_bit_quality(
     match test_type {
         // this branch will init the binomial test, finding the threshold and compute the test based on 4 bytes block on value AND f fonction in 2**32 range
         TestType::Binomial { threshold } => {
-            let threshold_odd_count = find_threshold_odd_count(total_blocks, threshold) as usize;
+            let threshold_odd_count = find_threshold_odd_count(total_blocks, *threshold) as usize;
             let expected_even = total_blocks as usize - threshold_odd_count;
 
             let issues: Vec<AtomicUsize> =
                 (0..total_blocks + 1).map(|_| AtomicUsize::new(0)).collect();
 
-            let in_percent = threshold as f64 * 100.0;
+            let in_percent = *threshold as f64 * 100.0;
 
             println!(
                 "- Binomial test\n- Count of blocks: {:?}\n- Odd count threasold for {:?}% : {:?}\n- Testing {} masks over {} data blocks",
@@ -324,6 +324,7 @@ fn extract_mic_cipher(path: &str) -> Result<(Vec<u32>, Vec<u32>), Box<dyn std::e
     Ok((packet_mic, packet_ciphertexts))
 }
 
+/// count the unique devices.
 fn count_dev_addresses(path: &str) -> Result<HashSet<u64>, Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
@@ -350,6 +351,7 @@ struct PacketNonceReuse {
     ciphertexts: HashSet<String>,
 }
 
+/// extracts every messages that used the same nonce in CCM. It generate a list by device and nonce reuse.
 fn spot_nonce_reuse(
     path: &str,
 ) -> Result<BTreeMap<u32, Vec<PacketNonceReuse>>, Box<dyn std::error::Error>> {
@@ -410,6 +412,7 @@ fn spot_nonce_reuse(
     Ok(final_results)
 }
 
+/// xor combinates ciphertexts each others. Quiet blind, but aim to show up patterns.
 fn xor_same_iv_ciphertexts(
     ciphertexts: Vec<&str>,
     outpout_len: usize,
@@ -500,6 +503,10 @@ enum RunType {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let program_to_run = RunType::GlobalStat;
     let file_path = "wss_messages.json";
+    let binomial_test_params = TestType::Binomial {
+        threshold: 0.0000001,
+    };
+    let odd_test_param = TestType::OddCountOnly;
 
     match program_to_run {
         RunType::StatisticalTest => {
@@ -510,9 +517,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // binomial test only
                         let _ = test_bit_quality(
                             &ciphertexts,
-                            TestType::Binomial {
-                                threshold: 0.0000001,
-                            },
+                            &binomial_test_params,
                             format!(
                                 "{}_synthetic_binomial_test_ciphertexts.json",
                                 ciphertexts.len()
@@ -521,21 +526,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                         let _ = test_bit_quality(
                             &mac_tags,
-                            TestType::Binomial {
-                                threshold: 0.0000001,
-                            },
+                            &binomial_test_params,
                             format!("{}_synthetic_binomial_test_mac.json", mac_tags.len()).as_str(),
                         );
                         // odd count test only
                         let _ = test_bit_quality(
                             &ciphertexts,
-                            TestType::OddCountOnly,
+                            &odd_test_param,
                             format!("{}_synthetic_odd_test_ciphertexts.json", ciphertexts.len())
                                 .as_str(),
                         );
                         let _ = test_bit_quality(
                             &mac_tags,
-                            TestType::OddCountOnly,
+                            &odd_test_param,
                             format!("{}_synthetic_odd_test_mac.json", mac_tags.len()).as_str(),
                         );
                     }
@@ -548,29 +551,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // binomial test only
                         let _ = test_bit_quality(
                             &ciphertexts,
-                            TestType::Binomial {
-                                threshold: 0.0000001,
-                            },
+                            &binomial_test_params,
                             format!("{}_real_binomial_test_ciphertexts.json", ciphertexts.len())
                                 .as_str(),
                         );
                         let _ = test_bit_quality(
                             &mac_tags,
-                            TestType::Binomial {
-                                threshold: 0.0000001,
-                            },
+                            &binomial_test_params,
                             format!("{}_real_binomial_test_mac.json", mac_tags.len()).as_str(),
                         );
                         // odd count test only
                         let _ = test_bit_quality(
                             &ciphertexts,
-                            TestType::OddCountOnly,
+                            &odd_test_param,
                             format!("{}_real_odd_test_ciphertexts.json", ciphertexts.len())
                                 .as_str(),
                         );
                         let _ = test_bit_quality(
                             &mac_tags,
-                            TestType::OddCountOnly,
+                            &odd_test_param,
                             format!("{}_real_odd_test_mac.json", mac_tags.len()).as_str(),
                         );
                     }
