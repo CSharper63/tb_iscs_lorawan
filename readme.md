@@ -27,16 +27,12 @@ The goal of the programs you can find in this repo is to verify that there is no
         - $H_A$: The proportion of odd bits is not 0.5.
         - $p = 0.000001$: as the MIC has a 32-bit length, the test must try all 232232 possible masks. This will be tested on ```MIC``` and ```FRMPayload```.
         The test run as follow :
-        $$
-        \begin{align*}
-        &\textbf{c}, \text{ a set of } n \text{ 32-bit FRMPayload/MIC} \\
-        &\text{For each } f \in \{0, \ldots, 2^{32} - 1\} : \\
-        &\quad A \gets \textbf{c} \land f \\
-        &\quad \text{Collect the number of odd 1-bits in } A. \\
-        &\quad \text{Check if the collected number does not reject } H_0. \text{ If so, it is added to the list rejecting } H_0.
-        \end{align*}
-        $$
-        
+        - $C$ is a set of $n$ ```MIC```/```FRMPayload```
+        - For each $f$ ∈ {0, … , 232 − 1}
+            - $A$ ⟵ $c$ ∧ $f$, $c$ is a element of $C$.
+            - Collect the number of odd 1-bits in $A$
+            - Check if the collected number does not reject $H_0$. If so, it is added to the list rejecting $H_0$ 
+
         > This program is coded to be executed in parallel. With 8 cores it takes about 3h to be executed on every  $30000$ ```MIC```/```FRMPayload``` with $2^{32} f$.
 
     2. **Odd test**: same as the Binomial test but instead of keeping only numbers that reject $H_0$, they all are collected to compute a distribution.
@@ -50,8 +46,8 @@ The goal of the programs you can find in this repo is to verify that there is no
     This program allows you to parse/build a response as your own.
     7. Deamon export and telegram bot was used in collect case to be able to commit automatically the collected data every hour in this repo. The telegram bot were used to be able to access these data anywhere at any time.
 
-    > [!TIP]
-    > All test executed from test_quality_bit program are based on real collected data in json format. You can find them in the next section.
+> [!TIP]
+> All test executed from test_quality_bit program are based on real collected data in json format. You can find them in the next section.
 
 ## Collected data
 
