@@ -8,7 +8,7 @@ This work was carried out as part of a bachelor's thesis in cybersecurity at [HE
 
 It has been supervised by Dr. Maxime Augier.
 
-The whole analysis paper is available [there]() in french.
+The whole analysis paper is available soon.
 
 ### Reminder
 - AES-ECB is used as KDF in most cases to derive keys. In one case, it is used as an encryption scheme for a block lower than 128 bits, so there is no security issue there.
@@ -58,4 +58,4 @@ All data collected were use as security analysis purpose and available in this [
 Overall, the combination of algorithms used to guarantee security seems to be working well. Based on the present analyses, there are no problems with the protocol.
 
 > [!CAUTION]
-> On the other hand, several devices seem to be reusing IV/Nonce in AES-CCM, which is totally catastrophic and compromises all security. From this point of view, it's worth remembering to be very careful when using stream ciphers like AES-CCM. Never reuse an IV.
+> On the other hand, several devices seem to be reusing IV/Nonce in AES-CCM, which is totally catastrophic and compromises all security. From this point of view, it's worth remembering to be very careful when using stream ciphers like AES-CCM. **Never reuse an IV**.
