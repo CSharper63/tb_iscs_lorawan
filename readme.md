@@ -8,7 +8,8 @@ This work was carried out as part of a bachelor's thesis in cybersecurity at [HE
 
 It has been supervised by Dr. Maxime Augier.
 
-The whole analysis paper is available soon.
+> [!TIP]
+> [The full analysis report is available here](https://maxime.chantemargue.ch/assets/lorawan_security/report.pdf). It explains each step of each analysis and how to reproduce them if you wish.
 
 ### Reminder
 - AES-ECB is used as KDF in most cases to derive keys. In one case, it is used as an encryption scheme for a block lower than 128 bits, so there is no security issue there.
