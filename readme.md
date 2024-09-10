@@ -40,7 +40,7 @@ The goal of the programs you can find in this repo is to verify that there is no
     2. [**Odd test**](/analysis/test_bit_quality/src/main.rs): same as the Binomial test but instead of keeping only numbers that reject $H_0$, they all are collected to compute a distribution.
     3. (**IV reuse detection**)[(/analysis/test_bit_quality/src/main.rs)]: part of test_quality_bit program. It is used to extract all stream cipher IV reuse. then another part of the program will combine all the messages by xor, with a repetition of IVs between them to try to discover patterns.   
     4. In [```analysis/```](/analysis/notebook.ipynb), you will find a jupyter notebook used to create graphs based on test computed collected data such as AES bit distributions.
-2. **Man-In-The-Middle proxy**: used as a proxy ([mitmproxy](https://hub.docker.com/r/mitmproxy/mitmproxy/)) between a LoRaWAN gateway and the service provider to make a MITM attack to be able to access the HTTPS encrypted content. The goal is to collect data massively to be able to execute a good statistical test. 
+2. [**Man-In-The-Middle proxy**](/mitmproxy/log_requests.py): used as a proxy ([mitmproxy](https://hub.docker.com/r/mitmproxy/mitmproxy/)) between a LoRaWAN gateway and the service provider to make a MITM attack to be able to access the HTTPS encrypted content. The goal is to collect data massively to be able to execute a good statistical test. 
 In the mitmproxy middleware, there are 2 categories:
     1. The middleware that collected the data that are transmitted by the gateway to the cloud (uplink and downlink).
     2. A serie of test to verify that the packet integrity works as explained in their LoRaWAN 1.1 specification.
